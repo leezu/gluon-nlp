@@ -100,6 +100,75 @@ def test_imdb():
         assert score == 0
 
 
+###############################################################################
+# Word similarity and relatedness datasets
+###############################################################################
+def test_wordsim353():
+    for segment, length in [("relatedness", 252), ("similarity", 203)]:
+        data = nlp.data.WordSim353(
+            root='tests/data/wordsim353', segment=segment)
+        assert len(data) == length, len(data)
+        assert float(data[0][2])
+
+
+def test_men():
+    for segment, length in [("full", 3000), ("dev", 2000), ("test", 1000)]:
+        data = nlp.data.MEN(root='tests/data/men', segment=segment)
+        assert len(data) == length, len(data)
+        assert float(data[0][2])
+
+
+def test_radinsky_mturk():
+    data = nlp.data.RadinskyMTurk(root='tests/data/radinsky')
+    assert len(data) == 287
+    assert float(data[0][2])
+
+
+def test_rare_words():
+    data = nlp.data.RareWords(root='tests/data/rarewords')
+    assert len(data) == 2034
+    assert float(data[0][2])
+
+
+def test_simlex999():
+    data = nlp.data.SimLex999(root='tests/data/simlex999')
+    assert len(data) == 999
+    assert float(data[0][3])
+
+
+def test_simverb3500():
+    data = nlp.data.SimVerb3500(root='tests/data/simverb3500')
+    assert len(data) == 3500
+    assert float(data[0][3])
+
+
+def test_semeval17task2():
+    for segment, length in [("trial", 18), ("test", 500)]:
+        data = nlp.data.SemEval17Task2(
+            root='tests/data/semeval17task2', segment=segment)
+        assert len(data) == length
+        assert float(data[0][2])
+
+
+###############################################################################
+# Word analogy datasets
+###############################################################################
+def test_googleanalogy():
+    data = nlp.data.GoogleAnalogyTestSet(root='tests/data/google_analogy')
+
+    df = data._data
+    assert len(df[df["group"] == "syntactic"]) == 10675
+    assert len(df[df["group"] == "semantic"]) == 8869
+
+    assert data[0].shape == (4, )
+
+
+def test_bigger_analogy():
+    data = nlp.data.BiggerAnalogyTestSet(root='tests/data/bigger_analogy')
+
+    assert data[0].shape == (4, )
+    assert len(data) == 98000
+
 
 if __name__ == '__main__':
     import nose

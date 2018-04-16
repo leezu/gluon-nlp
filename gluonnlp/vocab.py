@@ -427,3 +427,27 @@ class Vocab(object):
         vocab._bos_token = vocab_dict.get('bos_token')
         vocab._eos_token = vocab_dict.get('eos_token')
         return vocab
+
+    @staticmethod
+    def from_token_embedding(token_embedding):
+        """Construct vocabulary of all tokens in token embedding.
+
+        Parameters
+        ----------
+        token_embedding : nlp.embedding.TokenEmbedding
+            Token embedding.
+
+
+        Returns
+        -------
+        Vocab
+        """
+        vocab = Vocab()
+        vocab._idx_to_token = token_embedding._idx_to_token
+        vocab._token_to_idx = token_embedding._token_to_idx
+        vocab._reserved_tokens = token_embedding._reserved_tokens #  TODO
+        vocab._unknown_token = token_embedding._unknown_token
+        vocab._padding_token = token_embedding._padding_token #  TODO
+        vocab._bos_token = token_embedding._bos_token #  TODO
+        vocab._eos_token = token_embedding._eos_token #  TODO
+        return vocab

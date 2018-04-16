@@ -17,18 +17,21 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# pylint: disable=wildcard-import
-"""NLP toolkit."""
+from __future__ import print_function
+import json
+import mxnet as mx
+import gluonnlp as nlp
 
-from . import data
-from . import model
-from . import embedding
-from .vocab import *
 
-__version__ = '0.1.0'
+def test_similarity():
+    data = nlp.data.WordSim353(
+        root='tests/data/wordsim353', segment="relatedness")
+    token_embedding = nlp.embedding.create(
+        "glove", source="glove.6B.50d.txt", unknown_token=None)
 
-__all__ = ['data',
-           'model',
-           'embedding',
-           'evaluation',
-           'Vocab']
+    evaluator = nlp.evaluation.WordEmbeddingSimilarityEvaluator()
+
+
+if __name__ == '__main__':
+    import nose
+    nose.runmodule()
