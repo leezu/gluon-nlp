@@ -100,6 +100,12 @@ def test_imdb():
         assert score == 0
 
 
+def test_text8():
+    train = nlp.data.Text8(root='tests/data/text8', segment='train')
+    assert len(train) == 1, len(train)
+    assert len(train[0]) == 17005207, len(train[0])
+
+
 ###############################################################################
 # Word similarity and relatedness datasets
 ###############################################################################

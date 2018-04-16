@@ -1,0 +1,294 @@
+# coding: utf-8
+
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# pylint: disable=
+"""Word embedding training datasetst."""
+
+__all__ = ['Text8', 'SkipGramWordEmbeddingDataset']
+
+import logging
+import os
+import shutil
+import time
+import zipfile
+
+import attr
+import numba
+import numpy as np
+from mxnet.gluon.data.dataset import Dataset, SimpleDataset
+from mxnet.gluon.utils import _get_repo_file_url, check_sha1, download
+
+from .. import _constants as C
+from .dataset import CorpusDataset
+from .utils import Counter
+from ..vocab import Vocab
+
+
+class _Hutter(CorpusDataset):
+    def __init__(self, root, namespace, seq_len, bos, eos, pad):
+        root = os.path.expanduser(root)
+        if not os.path.isdir(root):
+            os.makedirs(root)
+        self._root = root
+        self._base_url = 'http://mattmahoney.net/dc/'
+        super(_Hutter, self).__init__(self._get_data())
+
+    def _get_data(self):
+        archive_file_name, archive_hash = self._archive_file
+        data_file_name, data_hash = self._data_file[self._segment]
+        root = self._root
+        path = os.path.join(root, data_file_name)
+        if not os.path.exists(path) or not check_sha1(path, data_hash):
+            downloaded_file_path = download(
+                self._base_url + archive_file_name,
+                path=root,
+                sha1_hash=archive_hash)
+
+            with zipfile.ZipFile(downloaded_file_path, 'r') as zf:
+                for member in zf.namelist():
+                    filename = os.path.basename(member)
+                    if filename:
+                        dest = os.path.join(root, filename)
+                        with zf.open(member) as source, \
+                             open(dest, "wb") as target:
+                            shutil.copyfileobj(source, target)
+        return path
+
+
+class Text8(_Hutter):
+    def __init__(self,
+                 root=os.path.join('~', '.mxnet', 'datasets', 'text8'),
+                 segment='train',
+                 seq_len=None,
+                 bos=None,
+                 eos=None,
+                 pad=None):
+        self._archive_file = ('text8.zip',
+                              '6c70299b93b7e1f927b42cd8f6ac1a31547c7a2e')
+        self._data_file = {
+            'train': ('text8', '0dc3edebc970dcc96137e7deda4d9995af9d93de')
+        }
+        self._segment = segment
+        super(Text8, self).__init__(root, 'text8', seq_len, bos, eos, pad)
+
+
+@attr.s
+class _WordEmbeddingDataset(Dataset):
+    """Dataset for word embedding training tasks.
+
+    Takes a corpus dataset like Text8 as input. Processes sentences / lines in
+    the dataset following the fasttext conventions. The implementation roughly
+    follows the fasttext implementation but uses just in time compiled python
+    code (with numba) instead of C++.
+
+    Exposes batches for SkipGram or ContinousBagOfWord training.
+
+    Parameters
+    ----------
+    sentences : Dataset
+        Base dataset of sentences.
+    window : int
+        The size distance for training the embeddings. Considered to generate
+        batches.
+    negative : int
+        Number of negative samples used for training. Currently > 0 is the only
+        supported mode.
+    min_count : int
+        Discard words occuring less than min_count times in sentences dataset.
+    sample : float
+        Subsample frequent words.
+
+    """
+
+    sentences = attr.ib()
+    window = attr.ib(default=5)
+    negative = attr.ib(default=5)
+    min_count = attr.ib(default=5)
+    sample = attr.ib(default=1e-3)
+    power = attr.ib(default=0.75)
+
+    # TODO
+    MAX_LINE_SIZE = attr.ib(default=1024)
+    MAX_VOCAB_SIZE = attr.ib(default=30000000)
+
+    def __attrs_post_init__(self):
+        super(_WordEmbeddingDataset, self).__init__()
+
+        # word hash to word index hash table datastructure
+        # TODO remove
+        # self._word2int = np.full((self.MAX_VOCAB_SIZE, ), -1, dtype=np.int32)
+
+        self._construct_token_idx_mapping()
+        self._prune_sentences()
+
+    def _construct_token_idx_mapping(self):
+        # Count token frequencies
+        counter = Counter(x for tup in self.sentences for x in tup)
+
+        # TODO May use Vocabulary class if adapted to keep track of token frequency
+        self._idx_to_token = []
+        self._idx_to_freq = []
+        self._token_to_idx = {}
+        for token, freq in counter.most_common():
+            if freq < self.min_count:
+                break
+            self._idx_to_token.append(token)
+            self._idx_to_freq.append(freq)
+            self._token_to_idx[token] = len(self._idx_to_token) - 1
+
+        self._idx_to_freq = np.array(self._idx_to_freq, dtype=np.int64)
+
+        # Probability table for subsampling frequent words (overall sum
+        # includes infrequent ones)
+        f = self._idx_to_freq / sum(counter.values())
+        self._idx_to_pdiscard = np.sqrt(self.sample / f) + self.sample / f
+
+        # Smoothed unigram counts for negative sampling. Negatives can be drawn
+        # by sampling a number in [0, self._smoothed_cumsum[-1]) and finding
+        # the respective index with np.searchsorted.
+        self._smoothed_token_freq_cumsum = np.cumsum(
+            (self._idx_to_freq**self.power).astype(np.int))
+
+    def _prune_sentences(self):
+        """Discard less-frequent words and downsample frequent words.
+
+        Applies min_count and sample settings.
+        """
+        # Delete less-frequent words and subsample frequent words
+        logging.info("Started pruning of less-frequent and "
+                     "very frequent words.")
+        start = time.time()
+        self._pruned_sentences = [[
+            token
+            for (random_draw, token) in zip(np.random.uniform(size=len(s)), s)
+            if token in self._token_to_idx and
+            not random_draw > self._idx_to_pdiscard[self._token_to_idx[token]]
+        ] for s in self.sentences]
+        logging.info("Finished pruning in "
+                     "{} seconds.".format(time.time() - start))
+
+        # Coding of tokens
+        # TODO combine the coding and pruning step
+        logging.info("Started coding of sentences.")
+        start = time.time()
+        coded = [
+            np.array(
+                [self._token_to_idx[token] for token in s], dtype=np.int64)
+            for s in self._pruned_sentences
+        ]
+        logging.info("Finished coding in "
+                     "{} seconds.".format(time.time() - start))
+
+        # Sentence boundaries
+        self._sentence_boundaries = np.cumsum([len(s) for s in coded])
+
+        # Store all tokens in one flat array
+        self.coded = np.concatenate(coded)
+
+    def __getitem__(self, idx):
+        # Separate Implementation for SkipGram and CBOW
+        raise NotImplementedError
+
+    def __len__(self):
+        # 1 sample for every token over all sentences
+        return self._sentence_boundaries[-1]
+
+    @property
+    def num_tokens(self):
+        return len(self._smoothed_token_freq_cumsum)
+
+
+class SkipGramWordEmbeddingDataset(_WordEmbeddingDataset):
+    # Processes around 150k items per second on 2017 MacBook Pro
+    def __getitem__(self, idx):
+        # Make sure idx is of shape (batch_size,)
+        idx = np.array(idx).flatten()
+        source, target, label = _build_sg_batch(
+            self.coded, idx, self.window, self.negative,
+            self._smoothed_token_freq_cumsum, self._sentence_boundaries)
+        if len(idx) == 1:
+            return source[0], target[0], label[0]
+        else:
+            return source, target, label
+
+
+@numba.njit()
+def _build_sg_batch(coded, idxs, window, negative, token_freq_cumsum,
+                    sentence_boundaries):
+    batch_size = len(idxs)
+
+    sources = np.zeros((batch_size, 1), np.float32)
+    targets = np.zeros((batch_size, negative + 1), dtype=np.float32)
+    labels = np.zeros((batch_size, negative + 1), dtype=np.float32)
+
+    for i in numba.prange(batch_size):
+        idx = idxs[i]
+        source, target, label = _build_sg_item(coded, idx, window, negative,
+                                               token_freq_cumsum,
+                                               sentence_boundaries)
+        sources[i] = source
+        targets[i] = target
+        labels[i] = label
+
+    return sources, targets, labels
+
+
+@numba.njit()
+def _build_sg_item(coded, idx, window, negative, token_freq_cumsum,
+                   sentence_boundaries):
+    # TODO alternative to sampling, return all positive targets from fixed window size (to keep batch shapes identical)
+    # To keep equivalence to word2vec, weight by distance to window center http://www.aclweb.org/anthology/Q15-1016
+
+    sentence_idx = np.searchsorted(sentence_boundaries, idx)
+    sentence_end = sentence_boundaries[sentence_idx]
+    if sentence_idx > 0:
+        sentence_start = sentence_boundaries[sentence_idx - 1]
+    else:
+        sentence_start = 0
+
+    # TODO Throw away "sentences" for which assertion does not hold in Dataset class
+    assert sentence_end - sentence_start > 1, "Can't sample positive target from sentence with only one word"
+
+    # `b` in the original word2vec code
+    random_reduced_window_size = np.random.randint(1, window)
+    window_start_idx = max(sentence_start, idx - random_reduced_window_size)
+    # First index outside of the window
+    window_end_idx = min(sentence_end, idx + random_reduced_window_size + 1)
+
+    # Sample positive_target_idx
+    positive_target_idx = idx
+    while positive_target_idx == idx:
+        positive_target_idx = np.random.randint(window_start_idx,
+                                                window_end_idx)
+
+    # Prepare batch array
+    source = np.full((1, ), coded[idx], np.float32)
+    target = np.zeros((negative + 1, ), np.float32)
+    label = np.zeros((negative + 1, ), np.float32)
+    target[0] = coded[positive_target_idx]
+    label[0] = 1
+
+    # Sample negative
+    for i in numba.prange(negative):
+        target[i + 1] = np.searchsorted(token_freq_cumsum,
+                                        np.random.randint(
+                                            token_freq_cumsum[-1]))
+        label[i + 1] = 0
+
+    return source, target, label
