@@ -24,35 +24,30 @@ import sys
 import mxnet as mx
 import gluonnlp as nlp
 from gluonnlp.model import get_model as get_text_model
-from common import setup_module, with_seed
 
 
 def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
 
+
 def get_frequencies(dataset):
     return nlp.data.utils.Counter(x for tup in dataset for x in tup[0]+tup[1][-1:])
 
-@with_seed()
 def test_text_models():
     val = nlp.data.WikiText2(segment='val', root='tests/data/wikitext-2')
     val_freq = get_frequencies(val)
     vocab = nlp.Vocab(val_freq)
-    text_models = ['standard_lstm_lm_200', 'standard_lstm_lm_650', 'standard_lstm_lm_1500', 'awd_lstm_lm_1150']
-    pretrained_to_test = {'standard_lstm_lm_650': 'wikitext-2', 'standard_lstm_lm_200': 'wikitext-2'}
+    text_models = ['standard_lstm_lm_200', 'standard_lstm_lm_650', 'standard_lstm_lm_1500', 'awd_lstm_lm_1150', 'awd_lstm_lm_600']
+    pretrained_to_test = {'standard_lstm_lm_1500': 'wikitext-2', 'standard_lstm_lm_650': 'wikitext-2', 'standard_lstm_lm_200': 'wikitext-2', 'awd_lstm_lm_1150': 'wikitext-2', 'awd_lstm_lm_600': 'wikitext-2'}
 
     for model_name in text_models:
         eprint('testing forward for %s' % model_name)
         pretrained_dataset = pretrained_to_test.get(model_name)
         model, _ = get_text_model(model_name, vocab=vocab, dataset_name=pretrained_dataset,
                                   pretrained=pretrained_dataset is not None, root='tests/data/model/')
+
         print(model)
         if not pretrained_dataset:
             model.collect_params().initialize()
         output, state = model(mx.nd.arange(330).reshape(33, 10))
         output.wait_to_read()
-
-
-if __name__ == '__main__':
-    import nose
-    nose.runmodule()

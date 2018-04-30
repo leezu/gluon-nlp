@@ -6,6 +6,7 @@ stage("Sanity Check") {
       conda env update -f env/pylint.yml
       source activate gluon_nlp_pylint
       conda list
+      make clean
       make pylint
       """
     }
@@ -23,8 +24,9 @@ stage("Unit Test") {
         conda list
         python -m spacy download en
         python -m nltk.downloader all
+        make clean
         python setup.py install
-        nosetests -v --nocapture --with-timer tests/unittest
+        py.test -v --capture=no --durations=0 --cov=gluonnlp --cov=scripts tests/unittest scripts
         """
       }
     }
@@ -39,8 +41,9 @@ stage("Unit Test") {
         conda list
         python -m spacy download en
         python -m nltk.downloader all
+        make clean
         python setup.py install
-        nosetests -v --nocapture --with-timer tests/unittest
+        py.test -v --capture=no --durations=0 --cov=gluonnlp --cov=scripts tests/unittest scripts
         """
       }
     }
@@ -57,18 +60,22 @@ stage("Deploy") {
       conda list
       python setup.py install
       export LD_LIBRARY_PATH=/usr/local/cuda/lib64
-      make -C docs clean
-      make -C docs html
-      if [[ ${env.BRANCH_NAME} == PR-* ]]; then
-          echo "Uploading doc to s3://gluon-nlp-staging/${env.BRANCH_NAME}/${env.BUILD_NUMBER}/"
-          aws s3 sync --delete docs/_build/html/ s3://gluon-nlp-staging/${env.BRANCH_NAME}/${env.BUILD_NUMBER}/ --acl public-read
-          echo "Uploaded doc to http://gluon-nlp-staging.s3-accelerate.dualstack.amazonaws.com/${env.BRANCH_NAME}/${env.BUILD_NUMBER}/index.html"
-      else
-          echo "Uploading doc to s3://gluon-nlp-staging/${env.BRANCH_NAME}/"
-          aws s3 sync --delete docs/_build/html/ s3://gluon-nlp/${env.BRANCH_NAME}/ --acl public-read
-          echo "Uploaded doc to http://gluon-nlp.mxnet.io/${env.BRANCH_NAME}/index.html"
-      fi
-      """
+      make clean
+      make release
+      make -C docs html SPHINXOPTS=-W"""
+
+      if (env.BRANCH_NAME.startsWith("PR-")) {
+        sh """#!/bin/bash
+        echo "Uploading doc to s3://gluon-nlp-staging/${env.BRANCH_NAME}/${env.BUILD_NUMBER}/"
+        aws s3 sync --delete docs/_build/html/ s3://gluon-nlp-staging/${env.BRANCH_NAME}/${env.BUILD_NUMBER}/ --acl public-read
+        echo "Uploaded doc to http://gluon-nlp-staging.s3-accelerate.dualstack.amazonaws.com/${env.BRANCH_NAME}/${env.BUILD_NUMBER}/index.html" """
+        pullRequest.comment("Job ${env.BRANCH_NAME}/${env.BUILD_NUMBER} is complete. \nDocs are uploaded to http://gluon-nlp-staging.s3-accelerate.dualstack.amazonaws.com/${env.BRANCH_NAME}/${env.BUILD_NUMBER}/index.html")
+      } else {
+        sh """#!/bin/bash
+        echo "Uploading doc to s3://gluon-nlp/${env.BRANCH_NAME}/"
+        aws s3 sync --delete docs/_build/html/ s3://gluon-nlp/${env.BRANCH_NAME}/ --acl public-read
+        echo "Uploaded doc to http://gluon-nlp.mxnet.io/${env.BRANCH_NAME}/index.html" """
+      }
     }
   }
 }

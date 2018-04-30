@@ -63,6 +63,15 @@ templates_path = ['_templates']
 nbsphinx_kernel_name = 'python3'
 nbsphinx_allow_errors = True
 nbsphinx_timeout = 1200
+html_sourcelink_suffix = ''
+
+nbsphinx_prolog = """
+{% set paths = env.docname.split('/') %}
+
+.. only:: html
+
+    :download:`[Download] <{{ "../%s.zip"|format(paths[1]) }}>`
+"""
 
 # The suffix(es) of source filenames.
 # You can specify multiple suffix as a list of string:
@@ -102,7 +111,7 @@ html_favicon = '_static/gluon_s2.png'
 
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
-exclude_patterns = ['_build']
+exclude_patterns = ['_build', '**.ipynb_checkpoints']
 
 # The reST default role (used for this markup: `text`) to use for all
 # documents.
@@ -206,6 +215,7 @@ def setup(app):
         'auto_doc_ref': True
             }, True)
     app.add_transform(AutoStructify)
+    app.add_javascript('google_analytics.js')
 
 
 sphinx_gallery_conf = {

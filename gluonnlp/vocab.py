@@ -30,14 +30,13 @@ import warnings
 
 from mxnet import nd
 
+from .data.utils import DefaultLookupDict
 from . import _constants as C
 from . import embedding as emb
-from .data.utils import Counter
 
 
 class Vocab(object):
     """Indexing and embedding attachment for text tokens.
-
 
     Parameters
     ----------
@@ -71,7 +70,6 @@ class Vocab(object):
         contain `unknown_token` or duplicate reserved tokens. Keys of `counter`, `unknown_token`,
         and values of `reserved_tokens` must be of the same hashable type. Examples: str, int, and
         tuple.
-
 
     Properties
     ----------
@@ -166,11 +164,6 @@ class Vocab(object):
         if counter:
             self._index_counter_keys(counter, unknown_token, special_tokens, max_size, min_freq)
 
-        if unknown_token:
-            self._to_idx = lambda x: self._token_to_idx.get(x, C.UNK_IDX)
-        else:
-            self._to_idx = lambda x: self._token_to_idx[x]
-
         self._embedding = None
 
     def _index_special_tokens(self, unknown_token, special_tokens):
@@ -183,7 +176,11 @@ class Vocab(object):
             self._reserved_tokens = special_tokens[:]
             self._idx_to_token.extend(special_tokens)
 
-        self._token_to_idx = {token: idx for idx, token in enumerate(self._idx_to_token)}
+        if unknown_token:
+            self._token_to_idx = DefaultLookupDict(C.UNK_IDX)
+        else:
+            self._token_to_idx = {}
+        self._token_to_idx.update((token, idx) for idx, token in enumerate(self._idx_to_token))
 
     def _index_counter_keys(self, counter, unknown_token, special_tokens, max_size,
                             min_freq):
@@ -193,9 +190,6 @@ class Vocab(object):
         Indexes keys of `counter` according to frequency thresholds such as `max_size` and
         `min_freq`.
         """
-
-        assert isinstance(counter, Counter), \
-            '`counter` must be an instance of Counter.'
 
         unknown_and_special_tokens = set(special_tokens) if special_tokens else set()
 
@@ -283,9 +277,9 @@ class Vocab(object):
         """
 
         if not isinstance(tokens, (list, tuple)):
-            return self._to_idx(tokens)
+            return self._token_to_idx[tokens]
         else:
-            return [self._to_idx(token) for token in tokens]
+            return [self._token_to_idx[token] for token in tokens]
 
     def __len__(self):
         return len(self._idx_to_token)
@@ -381,6 +375,24 @@ class Vocab(object):
 
         return self[tokens]
 
+    def __call__(self, tokens):
+        """Looks up indices of text tokens according to the vocabulary.
+
+
+        Parameters
+        ----------
+        tokens : str or list of strs
+            A source token or tokens to be converted.
+
+
+        Returns
+        -------
+        int or list of ints
+            A token index or a list of token indices according to the vocabulary.
+        """
+
+        return self[tokens]
+
     def __repr__(self):
         return 'Vocab(size={}, unk="{}", reserved="{}")'.format(len(self), self._unknown_token,
                                                                 self._reserved_tokens)
@@ -391,11 +403,13 @@ class Vocab(object):
         This method does not serialize the underlying embedding.
         """
         if self._embedding:
-            warnings.warn('Serialization of attached embedding is not supported. '
-                          'Please save separately')
+            warnings.warn('Serialization of attached embedding '
+                          'to json is not supported. '
+                          'You may serialize the embedding to a binary format '
+                          'separately using vocab.embedding.serialize')
         vocab_dict = {}
         vocab_dict['idx_to_token'] = self._idx_to_token
-        vocab_dict['token_to_idx'] = self._token_to_idx
+        vocab_dict['token_to_idx'] = dict(self._token_to_idx)
         vocab_dict['reserved_tokens'] = self._reserved_tokens
         vocab_dict['unknown_token'] = self._unknown_token
         vocab_dict['padding_token'] = self._padding_token
@@ -419,35 +433,15 @@ class Vocab(object):
         """
         vocab_dict = json.loads(json_str)
 
-        vocab = Vocab(unknown_token=vocab_dict.get('unknown_token'))
+        unknown_token = vocab_dict.get('unknown_token')
+        vocab = Vocab(unknown_token=unknown_token)
         vocab._idx_to_token = vocab_dict.get('idx_to_token')
         vocab._token_to_idx = vocab_dict.get('token_to_idx')
+        if unknown_token:
+            vocab._token_to_idx = DefaultLookupDict(vocab._token_to_idx[unknown_token],
+                                                    vocab._token_to_idx)
         vocab._reserved_tokens = vocab_dict.get('reserved_tokens')
         vocab._padding_token = vocab_dict.get('padding_token')
         vocab._bos_token = vocab_dict.get('bos_token')
         vocab._eos_token = vocab_dict.get('eos_token')
-        return vocab
-
-    @staticmethod
-    def from_token_embedding(token_embedding):
-        """Construct vocabulary of all tokens in token embedding.
-
-        Parameters
-        ----------
-        token_embedding : nlp.embedding.TokenEmbedding
-            Token embedding.
-
-
-        Returns
-        -------
-        Vocab
-        """
-        vocab = Vocab()
-        vocab._idx_to_token = token_embedding._idx_to_token
-        vocab._token_to_idx = token_embedding._token_to_idx
-        vocab._reserved_tokens = token_embedding._reserved_tokens #  TODO
-        vocab._unknown_token = token_embedding._unknown_token
-        vocab._padding_token = token_embedding._padding_token #  TODO
-        vocab._bos_token = token_embedding._bos_token #  TODO
-        vocab._eos_token = token_embedding._eos_token #  TODO
         return vocab

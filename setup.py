@@ -1,6 +1,6 @@
 #!/usr/bin/env python
-import os
 import io
+import os
 import re
 import shutil
 import sys
@@ -24,7 +24,7 @@ def find_version(*file_paths):
     raise RuntimeError("Unable to find version string.")
 
 
-readme = open('README.md').read()
+readme = io.open('README.rst', encoding='utf-8').read()
 
 VERSION = find_version('gluonnlp', '__init__.py')
 
@@ -46,8 +46,25 @@ setup(
     license='Apache-2.0',
 
     # Package info
-    packages=find_packages(exclude=('tests',)),
-
+    packages=find_packages(exclude=(
+        'tests',
+        'scripts',
+    )),
     zip_safe=True,
+    include_package_data=True,
     install_requires=requirements,
+    extras_require={
+        'extras': [
+            'spacy',
+            'nltk',
+            'scipy',
+        ],
+        'dev': [
+            'pytest',
+            'recommonmark',
+            'sphinx-gallery',
+            'sphinx_rtd_theme',
+            'nbsphinx',
+        ],
+    },
 )

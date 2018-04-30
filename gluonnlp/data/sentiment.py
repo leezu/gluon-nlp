@@ -27,8 +27,10 @@ import os
 
 from mxnet.gluon.data import SimpleDataset
 from mxnet.gluon.utils import download, check_sha1, _get_repo_file_url
+from .registry import register
 
 
+@register(segment=['train', 'test', 'unsup'])
 class IMDB(SimpleDataset):
     """IMDB reviews for sentiment analysis.
 
@@ -37,10 +39,10 @@ class IMDB(SimpleDataset):
 
     Parameters
     ----------
-    root : str, default '~/.mxnet/datasets/imdb'
-        Path to temp folder for storing data.
     segment : str, default 'train'
         Dataset segment. Options are 'train', 'test', and 'unsup' for unsupervised.
+    root : str, default '~/.mxnet/datasets/imdb'
+        Path to temp folder for storing data.
     """
     def __init__(self, segment='train', root=os.path.join('~', '.mxnet', 'datasets', 'imdb')):
         self._data_file = {'train': ('train.json',

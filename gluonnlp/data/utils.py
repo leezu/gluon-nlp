@@ -37,6 +37,19 @@ from .. import _constants as C
 class Counter(collections.Counter): # pylint: disable=abstract-method
     """Counter class for keeping token frequencies."""
 
+class DefaultLookupDict(dict):
+    """Dictionary class with fall-back look-up with default value set in the constructor."""
+
+    def __init__(self, default, d=None):
+        if d:
+            super(DefaultLookupDict, self).__init__(d)
+        else:
+            super(DefaultLookupDict, self).__init__()
+        self._default = default
+
+    def __getitem__(self, k):
+        return self.get(k, self._default)
+
 
 def count_tokens(tokens, to_lower=False, counter=None):
     r"""Counts tokens in the specified string.
@@ -163,7 +176,7 @@ def _slice_pad_length(num_items, length, overlap=0):
         return 0
 
 
-_vocab_sha1 = {'wikitext-2': '5f779bbe4496a2c8999d6e83dfdf28b0c74d9fc8'}
+_vocab_sha1 = {'wikitext-2': 'be36dc5238c2e7d69720881647ab72eb506d0131'}
 _url_format = '{repo_url}gluon/dataset/vocab/{file_name}.zip'
 
 

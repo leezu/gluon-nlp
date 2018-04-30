@@ -22,6 +22,8 @@
 
 from .utils import *
 
+from .registry import *
+
 from .transforms import *
 
 from .sampler import *
@@ -32,13 +34,18 @@ from .language_model import *
 
 from .sentiment import *
 
-from .word_embedding_training import *
-
 from .word_embedding_evaluation import *
 
-from . import dataset, utils, transforms, sampler, batchify, \
-    word_embedding_training, word_embedding_evaluation
+from .word_embedding_training import *
 
-__all__ = utils.__all__ + transforms.__all__ + sampler.__all__ + dataset.__all__ + \
-          language_model.__all__ + sentiment.__all__ + \
-          word_embedding_training.__all__ + word_embedding_evaluation.__all__
+from .conll import *
+
+from .translation import *
+
+from . import batchify
+
+__all__ = (
+    utils.__all__ + transforms.__all__ + sampler.__all__ + dataset.__all__ +
+    language_model.__all__ + sentiment.__all__ +
+    word_embedding_evaluation.__all__ + word_embedding_evaluation.__all__ +
+    conll.__all__ + translation.__all__ + registry.__all__)
