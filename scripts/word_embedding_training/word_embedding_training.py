@@ -112,7 +112,6 @@ def validate_args(args):
     # Check correctness of similarity dataset names
 
     context = get_context(args)
-    assert len(context) == 1
     assert args.batch_size % len(context) == 0, \
         "Total batch size must be multiple of the number of devices"
 
@@ -181,9 +180,9 @@ def get_model(args, train_dataset):
 
     context = get_context(args)
     if args.normalized_initialization:
-        net.initialize(mx.init.Uniform(scale=1 / args.emsize), ctx=context[0])
+        net.initialize(mx.init.Uniform(scale=1 / args.emsize), ctx=context)
     else:
-        net.initialize(mx.init.Uniform(), ctx=context[0])
+        net.initialize(mx.init.Uniform(), ctx=context)
     loss = gluon.loss.SigmoidBinaryCrossEntropyLoss()
     net.hybridize()
 
@@ -288,14 +287,17 @@ def train(args):
             t = tqdm.trange(len(batch_sampler))
 
         for i, (source, target, label) in zip(t, data_loader):
-            source = mx.nd.array(source, ctx=context[0])
-            target = mx.nd.array(target, ctx=context[0])
-            label = mx.nd.array(label, ctx=context[0])
+            source = gluon.utils.split_and_load(source, context)
+            target = gluon.utils.split_and_load(target, context)
+            label = gluon.utils.split_and_load(label, context)
 
             with mx.autograd.record():
-                pred = net(source, target)
-                l = loss(pred, label)
-            l.backward()
+                losses = [
+                    loss(net(X, Y), Z)
+                    for X, Y, Z in zip(source, target, label)
+                ]
+            for l in losses:
+                l.backward()
             trainer.step(batch_size=1)
 
             if i % args.eval_interval == 0:
@@ -304,8 +306,9 @@ def train(args):
             t.set_postfix(
                 # TODO print number of grad norm > 0
                 loss=mx.nd.sum(l).asscalar(),
-                grad=net.embedding_in.weight.grad().norm().asscalar(),
-                data=net.embedding_in.weight.data().norm(
+                grad=net.embedding_in.weight.grad(
+                    ctx=context[0]).norm().asscalar(),
+                data=net.embedding_in.weight.data(ctx=context[0]).norm(
                     axis=1).mean().asscalar(),
                 **eval_dict)
 
