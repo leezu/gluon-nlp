@@ -186,10 +186,9 @@ def get_model(args, train_dataset):
     loss = gluon.loss.SigmoidBinaryCrossEntropyLoss()
     net.hybridize()
 
-    trainer = gluon.Trainer(net.collect_params(), 'sgd',
-                            {'learning_rate': args.lr})
+    kvstore = mx.kv.create('device')
 
-    return net, loss, trainer
+    return net, loss, kvstore
 
 
 ###############################################################################
@@ -262,9 +261,12 @@ def evaluate(args, net, training_dataset):
 ###############################################################################
 def train(args):
     train_dataset = get_train_data(args)
-    net, loss, trainer = get_model(args, train_dataset)
+    net, loss, kvstore = get_model(args, train_dataset)
     context = get_context(args)
 
+    params = list(net.collect_params().values())
+
+    _kv_initialized = False
     for epoch in range(args.epochs):
 
         import time
@@ -298,7 +300,34 @@ def train(args):
                 ]
             for l in losses:
                 l.backward()
-            trainer.step(batch_size=1)
+
+            if not _kv_initialized:
+                for i, param in enumerate(params):
+                    param_arrays = param.list_data()
+                    kvstore.init(i, param_arrays[0])
+                _kv_initialized = True
+
+            for param_i, param in enumerate(params):
+                if param.grad_req == 'null':
+                    continue
+                kvstore.push(param_i, param.list_grad(), priority=-param_i)
+
+                # Get indices updated rows
+                row_ids = mx.nd.concat(*[
+                    p.indices.as_in_context(mx.cpu())
+                    for p in param.list_grad()
+                ], dim=0)
+
+                # Share gradients
+                kvstore.row_sparse_pull(param_i, param.list_grad(),
+                                        priority=-param_i, row_ids=row_ids)
+
+                # Update params
+                for device_param, device_grad in zip(param.list_data(),
+                                                     param.list_grad()):
+                    mx.nd.sparse.sgd_update(weight=device_param,
+                                            grad=device_grad, lr=args.lr,
+                                            out=device_param)
 
             if i % args.eval_interval == 0:
                 eval_dict = evaluate(args, net, train_dataset)
