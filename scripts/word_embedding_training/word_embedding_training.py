@@ -276,7 +276,7 @@ def train(args):
                 train_dataset, batch_size=args.batch_size, shuffle=True,
                 last_batch='discard', num_workers=args.num_data_loader_workers)
             print(f"Spent {time.time() - start} building data_loader")
-            t = tqdm.trange(len(data_loader))
+            t = tqdm.trange(len(data_loader), smoothing=1)
         else:
             start = time.time()
             sampler = gluon.data.RandomSampler(len(train_dataset))
@@ -286,7 +286,7 @@ def train(args):
                                                     'discard')
             print(f"Spent {time.time() - start} building batch_sampler")
             data_loader = (train_dataset[batch] for batch in batch_sampler)
-            t = tqdm.trange(len(batch_sampler))
+            t = tqdm.trange(len(batch_sampler), smoothing=1)
 
         for i, (source, target, label) in zip(t, data_loader):
             source = gluon.utils.split_and_load(source, context)
