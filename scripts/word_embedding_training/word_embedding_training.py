@@ -180,7 +180,10 @@ def get_model(args, train_dataset):
     loss = gluon.loss.SigmoidBinaryCrossEntropyLoss()
     net.hybridize()
 
-    kvstore = mx.kv.create('device')
+    if len(context) > 1:
+        kvstore = mx.kv.create('device')
+    else:
+        kvstore = None
 
     return net, loss, kvstore
 
@@ -284,7 +287,7 @@ def train(args):
             for l in losses:
                 l.backward()
 
-            if not _kv_initialized:
+            if not _kv_initialized and len(context) > 1:
                 for param_i, param in enumerate(params):
                     kvstore.init(param_i, param.list_data()[0])
                 _kv_initialized = True
@@ -292,17 +295,19 @@ def train(args):
             for param_i, param in enumerate(params):
                 if param.grad_req == 'null':
                     continue
-                kvstore.push(param_i, param.list_grad(), priority=-param_i)
 
-                # Get indices updated rows
-                row_ids = mx.nd.concat(*[
-                    p.indices.as_in_context(mx.cpu())
-                    for p in param.list_grad()
-                ], dim=0)
+                if len(context) > 1:
+                    kvstore.push(param_i, param.list_grad(), priority=-param_i)
 
-                # Share gradients
-                kvstore.row_sparse_pull(param_i, param.list_grad(),
-                                        priority=-param_i, row_ids=row_ids)
+                    # Get indices updated rows
+                    row_ids = mx.nd.concat(*[
+                        p.indices.as_in_context(mx.cpu())
+                        for p in param.list_grad()
+                    ], dim=0)
+
+                    # Share gradients
+                    kvstore.row_sparse_pull(param_i, param.list_grad(),
+                                            priority=-param_i, row_ids=row_ids)
 
                 # Update params
                 for device_param, device_grad in zip(param.list_data(),
