@@ -38,12 +38,11 @@ from scipy import stats
 import gluonnlp as nlp
 
 try:
-    import progressbar
+    import tqdm
 except ImportError:
-    logging.warning(
-        'progressbar not installed. '
-        ' Install via `pip install progressbar2` for better usability.')
-    progressbar = None
+    logging.warning('tqdm not installed. '
+                    ' Install via `pip install tqdm` for better usability.')
+    tqdm = None
 
 
 def get_args():
@@ -61,7 +60,7 @@ def get_args():
         help='Normalize uniform initialization range by embedding size.')
     # Evaluation arguments
     group = parser.add_argument_group('Evaluation arguments')
-    group.add_argument('--eval-interval', type=int, default=1000,
+    group.add_argument('--eval-interval', type=int, default=100,
                        help='evaluation interval')
     ## Datasets
     group.add_argument(
@@ -77,7 +76,7 @@ def get_args():
 
     # Computation options
     group = parser.add_argument_group('Computation arguments')
-    group.add_argument('--batch-size', type=int, default=32,
+    group.add_argument('--batch-size', type=int, default=1024,
                        help='Batch size for training.')
     group.add_argument('--lr', type=float, default=0.1,
                        help='Initial learning rate')
@@ -93,11 +92,6 @@ def get_args():
     group.add_argument(
         '--log', type=str, default='results.csv', help='Path to logfile.'
         'Results of evaluation runs are written to there in a CSV format.')
-
-    # Temporary arguments  TODO remove
-    group = parser.add_argument_group('Temporary arguments')
-    group.add_argument('--old-batching-behaviour', action='store_true')
-    group.add_argument('--eval-size', type=int, default=5)
 
     args = parser.parse_args()
 
@@ -268,25 +262,14 @@ def train(args):
 
     _kv_initialized = False
     for epoch in range(args.epochs):
-
-        import time
-        if args.old_batching_behaviour:
-            start = time.time()
-            data_loader = mx.gluon.data.DataLoader(
-                train_dataset, batch_size=args.batch_size, shuffle=True,
-                last_batch='discard', num_workers=args.num_data_loader_workers)
-            print(f"Spent {time.time() - start} building data_loader")
-            t = tqdm.trange(len(data_loader), smoothing=1)
-        else:
-            start = time.time()
-            sampler = gluon.data.RandomSampler(len(train_dataset))
-            print(f"Spent {time.time() - start} building sampler")
-            start = time.time()
-            batch_sampler = gluon.data.BatchSampler(sampler, args.batch_size,
-                                                    'discard')
-            print(f"Spent {time.time() - start} building batch_sampler")
-            data_loader = (train_dataset[batch] for batch in batch_sampler)
+        sampler = gluon.data.RandomSampler(len(train_dataset))
+        batch_sampler = gluon.data.BatchSampler(sampler, args.batch_size,
+                                                'discard')
+        data_loader = (train_dataset[batch] for batch in batch_sampler)
+        if tqdm is not None:
             t = tqdm.trange(len(batch_sampler), smoothing=1)
+        else:
+            t = range(len(batch_sampler))
 
         for i, (source, target, label) in zip(t, data_loader):
             source = gluon.utils.split_and_load(source, context)
