@@ -285,9 +285,8 @@ def train(args):
                 l.backward()
 
             if not _kv_initialized:
-                for i, param in enumerate(params):
-                    param_arrays = param.list_data()
-                    kvstore.init(i, param_arrays[0])
+                for param_i, param in enumerate(params):
+                    kvstore.init(param_i, param.list_data()[0])
                 _kv_initialized = True
 
             for param_i, param in enumerate(params):
