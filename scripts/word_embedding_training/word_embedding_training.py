@@ -148,10 +148,10 @@ class SkipGramModel(gluon.HybridBlock):
                          **kwargs)
 
         with self.name_scope():
-            self.embedding_in = gluon.nn.Embedding(self.num_tokens,
-                                                   self.embedding_dim)
-            self.embedding_out = gluon.nn.Embedding(self.num_tokens,
-                                                    self.embedding_dim)
+            self.embedding_in = gluon.nn.SparseEmbedding(
+                self.num_tokens, self.embedding_dim)
+            self.embedding_out = gluon.nn.SparseEmbedding(
+                self.num_tokens, self.embedding_dim)
 
     def hybrid_forward(self, F, source, target):
         emb_in = self.embedding_in(source)
@@ -303,14 +303,19 @@ def train(args):
             if i % args.eval_interval == 0:
                 eval_dict = evaluate(args, net, train_dataset)
 
-            t.set_postfix(
-                # TODO print number of grad norm > 0
-                loss=mx.nd.sum(l).asscalar(),
-                grad=net.embedding_in.weight.grad(
-                    ctx=context[0]).norm().asscalar(),
-                data=net.embedding_in.weight.data(ctx=context[0]).norm(
-                    axis=1).mean().asscalar(),
-                **eval_dict)
+                t.set_postfix(
+                    # TODO print number of grad norm > 0
+                    loss=sum(l.sum().as_in_context(mx.cpu())
+                             for l in losses).asscalar(),
+                    grad=sum(
+                        net.embedding_in.weight.grad(
+                            ctx=ctx).as_in_context(mx.cpu()).norm()
+                        for ctx in context).asscalar(),
+                    data=net.embedding_in.weight.data(
+                        ctx=context[0]).as_in_context(
+                            mx.cpu()).tostype("default").norm(
+                                axis=1).mean().asscalar(),
+                    **eval_dict)
 
 
 if __name__ == '__main__':
