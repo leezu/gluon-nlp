@@ -37,6 +37,8 @@ from scipy import stats
 
 import gluonnlp as nlp
 
+import sparse_ops
+
 try:
     import tqdm
 except ImportError:
@@ -86,6 +88,11 @@ def get_args():
                              'If not specified, uses CPU.'))
     group.add_argument('--dont-hybridize', action='store_true',
                        help='Disable hybridization of gluon HybridBlocks.')
+    group.add_argument('--dont-normalize-gradient', action='store_true',
+                       help='L2 normalize word embedding gradients per word.')
+    group.add_argument(
+        '--force-py-op-normalize-gradient', action='store_true',
+        help='Always use Python sparse L2 normalization operator.')
 
     # Logging options
     group = parser.add_argument_group('Logging arguments')
@@ -312,6 +319,19 @@ def train(args):
                 # Update params
                 for device_param, device_grad in zip(param.list_data(),
                                                      param.list_grad()):
+                    if args.dont_normalize_gradient:
+                        pass
+                    elif (hasattr(mx.nd.sparse, 'l2_normalization')
+                          and not args.force_py_op_normalize_gradient):
+                        norm = mx.nd.sparse.sqrt(
+                            mx.nd._internal._square_sum(
+                                device_grad, axis=1, keepdims=True))
+                        mx.nd.sparse.l2_normalization(device_grad, norm,
+                                                      out=device_grad)
+                    else:
+                        device_grad = mx.nd.Custom(
+                            device_grad, op_type='sparse_l2normalization')
+
                     mx.nd.sparse.sgd_update(weight=device_param,
                                             grad=device_grad, lr=args.lr,
                                             out=device_param)
@@ -337,6 +357,11 @@ def train(args):
 if __name__ == '__main__':
     logging.basicConfig()
     logging.getLogger().setLevel(logging.INFO)
+
+    if not hasattr(mx.nd.sparse, 'l2_normalization'):
+        logging.warning('Mxnet version is not compiled with '
+                        'sparse l2_normalization support. '
+                        ' Using slow Python implementation.')
 
     args_ = get_args()
     validate_args(args_)
