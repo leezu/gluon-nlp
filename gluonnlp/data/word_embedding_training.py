@@ -57,6 +57,18 @@ def prune_sentences(coded, idx_to_pdiscard):
     return np.array(pruned, dtype=np.int32)
 
 
+# TODO remove once numba 0.39 is released https://github.com/numba/numba/pull/2902
+@numba.extending.overload(np.unique)
+def np_unique(a):
+    def np_unique_impl(a):
+        b = np.sort(a.ravel())
+        head = list(b[:1])
+        tail = [x for i, x in enumerate(b[1:]) if b[i] != x]
+        return np.array(head + tail)
+
+    return np_unique_impl
+
+
 ###############################################################################
 # Dataset / Samplers
 ###############################################################################
@@ -128,15 +140,24 @@ class _WordEmbeddingDataset(Dataset):
 
     """
 
-    def __init__(self, coded, idx_to_counts, window=5, negative=5, power=0.75):
+    def __init__(self, coded, idx_to_counts, idx_to_bytes, window=5,
+                 negative=5, power=0.75):
         self.idx_to_counts = idx_to_counts
         self.window = window
         self.negative = negative
         self.power = power
 
-        # Flatten the datastructure
+        # Flatten the datastructures
         self._sentence_boundaries = np.cumsum([len(s) for s in coded])
         self.coded = np.concatenate(coded)
+
+        if idx_to_bytes is not None:
+            max_bytes_len = max(len(s) for s in idx_to_bytes)
+            self.idx_to_bytes = np.stack(
+                np.pad(b, (0, max_bytes_len - len(b)), mode='constant')
+                for b in idx_to_bytes)
+        else:
+            self.idx_to_bytes = idx_to_bytes
 
         # Smoothed unigram counts for negative sampling. Negatives can be drawn
         # by sampling a number in [0, self._smoothed_cumsum[-1]) and finding
@@ -161,18 +182,21 @@ class SkipGramWordEmbeddingDataset(_WordEmbeddingDataset):
     def __getitem__(self, idx):
         # Make sure idx is of shape (batch_size,)
         idx = np.array(idx).flatten()
-        source, target, label = _build_sg_batch(
-            self.coded, idx, self.window, self.negative,
-            self._smoothed_token_freq_cumsum, self._sentence_boundaries)
+        (source, target, label,
+         unique_token_idxs, token_bytes) = _build_sg_batch(
+             self.coded, idx, self.window, self.negative,
+             self._smoothed_token_freq_cumsum, self._sentence_boundaries,
+             self.idx_to_bytes)
         if len(idx) == 1:
-            return source[0], target[0], label[0]
+            return (source[0], target[0], label[0], unique_token_idxs,
+                    token_bytes)
         else:
-            return source, target, label
+            return source, target, label, unique_token_idxs, token_bytes
 
 
 @numba.njit(nogil=True)
 def _build_sg_batch(coded, idxs, window, negative, token_freq_cumsum,
-                    sentence_boundaries):
+                    sentence_boundaries, idx_to_bytes):
     batch_size = len(idxs)
 
     sources = np.zeros((batch_size, 1), np.float32)
@@ -188,7 +212,20 @@ def _build_sg_batch(coded, idxs, window, negative, token_freq_cumsum,
         targets[i] = target
         labels[i] = label
 
-    return sources, targets, labels
+    # Find the subword information for all tokens included in the batch
+    unique_token_idxs_sources = np.unique(sources)
+    unique_token_idxs_targets = np.unique(targets)
+    unique_token_idxs = np.unique(
+        np.concatenate((unique_token_idxs_sources, unique_token_idxs_targets)))
+    token_bytes = idx_to_bytes[unique_token_idxs.astype(np.int32)]
+
+    # Throw away unneeded padding zeros
+    token_length = np.zeros((token_bytes.shape[0], ))
+    for i in numba.prange(token_bytes.shape[0]):
+        token_length[i] = np.argmax(token_bytes[i] == 0)
+    token_bytes = token_bytes[:, :np.max(token_length)]
+
+    return sources, targets, labels, unique_token_idxs, token_bytes
 
 
 @numba.njit(nogil=True)

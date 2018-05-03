@@ -39,6 +39,7 @@ import mxnet as mx
 import numpy as np
 import tqdm
 from mxnet import gluon
+from mxnet.gluon import nn, Block
 from scipy import stats
 
 import gluonnlp as nlp
@@ -147,28 +148,126 @@ def get_context(args):
 ###############################################################################
 # Model definitions
 ###############################################################################
-@attr.s
-class SkipGramModel(gluon.HybridBlock):
-    num_tokens = attr.ib()
-    embedding_dim = attr.ib()
+class SubwordRNN(Block):
+    """RNN model for sub-word embedding inference.
 
-    # gluon.Block parameters
-    gluon_prefix = attr.ib(default=None)
-    gluon_params = attr.ib(default=None)
+    Parameters
+    ----------
+    mode : str
+        The type of RNN to use. Options are 'lstm', 'gru', 'rnn_tanh',
+        'rnn_relu'.
+    embed_size : int
+        Dimension of embedding vectors for subword units.
+    hidden_size : int
+        Number of hidden units for RNN.
+    output_size : int
+        Dimension of embedding vectors for subword units.
+    num_layers : int
+        Number of RNN layers.
+    vocab_size : int, default 2**8
+        Size of the input vocabulary. Usually the input vocabulary is the
+        number of distinct bytes.
+    dropout : float
+        Dropout rate to use for encoder output.
 
-    def __attrs_post_init__(self, **kwargs):
-        super().__init__(prefix=self.gluon_prefix, params=self.gluon_params,
-                         **kwargs)
+    """
+
+    def __init__(self, mode, embed_size, hidden_size, num_layers, output_size,
+                 vocab_size=256, dropout=0.5, **kwargs):
+        super(SubwordRNN, self).__init__(**kwargs)
+        self._mode = mode
+        self._embed_size = embed_size
+        self._hidden_size = hidden_size
+        self._output_size = output_size
+        self._num_layers = num_layers
+        self._dropout = dropout
+        self._vocab_size = vocab_size
 
         with self.name_scope():
+            self.embedding = self._get_embedding()
+            self.encoder = self._get_encoder()
+            self.decoder = self._get_decoder()
+
+    def _get_embedding(self):
+        embedding = nn.HybridSequential()
+        with embedding.name_scope():
+            embedding.add(
+                nn.Embedding(self._vocab_size, self._embed_size,
+                             weight_initializer=mx.init.Uniform(0.1)))
+            if self._dropout:
+                embedding.add(nn.Dropout(self._dropout))
+        return embedding
+
+    def _get_encoder(self):
+        return nlp.model.utils._get_rnn_layer(
+            self._mode, self._num_layers, self._embed_size, self._hidden_size,
+            self._dropout, 0)
+
+    def _get_decoder(self):
+        output = nn.HybridSequential()
+        with output.name_scope():
+            output.add(nn.Dense(self._output_size, flatten=False))
+        return output
+
+    def begin_state(self, *args, **kwargs):
+        return self.encoder.begin_state(*args, **kwargs)
+
+    def forward(self, inputs, begin_state=None):  # pylint: disable=arguments-differ
+        """Defines the forward computation. Arguments can be either
+        :py:class:`NDArray` or :py:class:`Symbol`."""
+        encoded = self.embedding(inputs)
+        if not begin_state:
+            begin_state = self.begin_state(batch_size=inputs.shape[1],
+                                           ctx=inputs.context)
+        encoded, state = self.encoder(encoded, begin_state)
+        if self._dropout:
+            encoded = mx.nd.Dropout(encoded, p=self._dropout, axes=(0, ))
+        out = self.decoder(encoded)
+        return out, state
+
+
+class SkipGramModel(gluon.Block):
+    def __init__(self, num_tokens, embedding_dim, **kwargs):
+        super().__init__(**kwargs)
+
+        self.num_tokens = num_tokens
+        self.embedding_dim = embedding_dim
+
+        with self.name_scope():
+            # Training of embedding lookup matrix
             self.embedding_in = gluon.nn.SparseEmbedding(
                 self.num_tokens, self.embedding_dim)
             self.embedding_out = gluon.nn.SparseEmbedding(
                 self.num_tokens, self.embedding_dim)
 
-    def hybrid_forward(self, F, source, target):
-        emb_in = self.embedding_in(source)
-        emb_out = self.embedding_out(target)
+            # Training of subword embedding function
+            self.subword = SubwordRNN(mode='lstm', embed_size=32,
+                                      hidden_size=64,
+                                      output_size=embedding_dim, num_layers=1)
+
+    def forward(self, source, target, token_indices, token_bytes, F=mx.nd):
+        word_emb_in = self.embedding_in(source)
+        word_emb_out = self.embedding_out(target)
+
+        token_indices = token_indices.astype(np.int)  # TODO
+        subword_emb_weights_data = mx.nd.max(
+            self.subword(token_bytes)[0], axis=1)
+        subword_emb_weights_shape = (self.num_tokens, self.embedding_dim)
+        subword_emb_weights = mx.nd.sparse.row_sparse_array(
+            (subword_emb_weights_data, token_indices),
+            ctx=subword_emb_weights_data.context,
+            shape=subword_emb_weights_shape)
+
+        subword_emb_in = mx.nd.contrib.SparseEmbedding(
+            data=source, weight=subword_emb_weights, input_dim=self.num_tokens,
+            output_dim=self.embedding_dim)
+        subword_emb_out = mx.nd.contrib.SparseEmbedding(
+            data=source, weight=subword_emb_weights, input_dim=self.num_tokens,
+            output_dim=self.embedding_dim)
+
+        emb_in = word_emb_in + subword_emb_in
+        emb_out = word_emb_out + subword_emb_out
+
         return F.batch_dot(emb_in, emb_out.swapaxes(1, 2))
 
 
@@ -245,7 +344,14 @@ def get_train_data(args):
         with ThreadPoolExecutor(max_workers=num_workers) as e:
             coded = list(e.map(prune_sentences, coded))
 
-    sgdataset = nlp.data.SkipGramWordEmbeddingDataset(coded, idx_to_counts)
+    # Get index to byte mapping from vocab
+    idx_to_bytes = [
+        np.frombuffer(token.encode('utf-8'), dtype=np.uint8)
+        for token in vocab.idx_to_token
+    ]
+
+    sgdataset = nlp.data.SkipGramWordEmbeddingDataset(coded, idx_to_counts,
+                                                      idx_to_bytes)
     return sgdataset, vocab
 
 
@@ -364,16 +470,24 @@ def train(args):
 
         num_workers = math.ceil(mp.cpu_count() * 0.8)
         executor = ThreadPoolExecutor(max_workers=num_workers)
-        for i, (source, target, label) in zip(t, \
-                executor.map(train_dataset.__getitem__, batches)):
+        for i, (source, target, label, token_indices, token_bytes) in zip(
+                t, executor.map(train_dataset.__getitem__, batches)):
             source = gluon.utils.split_and_load(source, context)
             target = gluon.utils.split_and_load(target, context)
             label = gluon.utils.split_and_load(label, context)
 
+            assert len(context) == 1  # TODO now only 1 GPU supported
+            token_indices = mx.nd.array(token_indices, ctx=context[0])
+            token_bytes = mx.nd.array(token_bytes, ctx=context[0])
+
             with mx.autograd.record():
                 losses = [
-                    loss(net(X, Y), Z)
-                    for X, Y, Z in zip(source, target, label)
+                    loss(net(
+                        X,
+                        Y,
+                        token_indices,
+                        token_bytes,
+                    ), Z) for X, Y, Z in zip(source, target, label)
                 ]
             for l in losses:
                 l.backward()
