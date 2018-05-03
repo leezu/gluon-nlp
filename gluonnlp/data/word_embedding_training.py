@@ -22,24 +22,44 @@
 
 __all__ = ['Text8', 'SkipGramWordEmbeddingDataset']
 
-import logging
 import os
 import shutil
-import time
 import zipfile
 
-import attr
 import numba
 import numpy as np
-from mxnet.gluon.data.dataset import Dataset, SimpleDataset
-from mxnet.gluon.utils import _get_repo_file_url, check_sha1, download
+from mxnet.gluon.data.dataset import Dataset
+from mxnet.gluon.utils import check_sha1, download
 
-from .. import _constants as C
 from .dataset import CorpusDataset
-from .utils import Counter
-from ..vocab import Vocab
 
 
+###############################################################################
+# Preprocessing utilities
+###############################################################################
+@numba.njit()
+def get_sentence_start_end(sentence_boundaries, sentence_idx):
+    end = sentence_boundaries[sentence_idx]
+    if sentence_idx == 0:
+        start = 0
+    else:
+        start = sentence_boundaries[sentence_idx - 1]
+    return start, end
+
+
+@numba.njit()
+def prune_sentences(coded, idx_to_pdiscard):
+    '''Downsample frequent words.'''
+    pruned = []
+    for idx in coded:
+        if np.random.uniform(0.0, 1.0) < idx_to_pdiscard[idx]:
+            pruned.append(idx)
+    return np.array(pruned, dtype=np.int32)
+
+
+###############################################################################
+# Dataset / Samplers
+###############################################################################
 class _Hutter(CorpusDataset):
     def __init__(self, root, namespace, seq_len, bos, eos, pad):
         root = os.path.expanduser(root)
@@ -55,30 +75,23 @@ class _Hutter(CorpusDataset):
         root = self._root
         path = os.path.join(root, data_file_name)
         if not os.path.exists(path) or not check_sha1(path, data_hash):
-            downloaded_file_path = download(
-                self._base_url + archive_file_name,
-                path=root,
-                sha1_hash=archive_hash)
+            downloaded_file_path = download(self._base_url + archive_file_name,
+                                            path=root, sha1_hash=archive_hash)
 
             with zipfile.ZipFile(downloaded_file_path, 'r') as zf:
                 for member in zf.namelist():
                     filename = os.path.basename(member)
                     if filename:
                         dest = os.path.join(root, filename)
-                        with zf.open(member) as source, \
-                             open(dest, "wb") as target:
-                            shutil.copyfileobj(source, target)
+                        with zf.open(member) as source:
+                            with open(dest, "wb") as target:
+                                shutil.copyfileobj(source, target)
         return path
 
 
 class Text8(_Hutter):
-    def __init__(self,
-                 root=os.path.join('~', '.mxnet', 'datasets', 'text8'),
-                 segment='train',
-                 seq_len=None,
-                 bos=None,
-                 eos=None,
-                 pad=None):
+    def __init__(self, root=os.path.join('~', '.mxnet', 'datasets', 'text8'),
+                 segment='train', seq_len=None, bos=None, eos=None, pad=None):
         self._archive_file = ('text8.zip',
                               '6c70299b93b7e1f927b42cd8f6ac1a31547c7a2e')
         self._data_file = {
@@ -88,7 +101,6 @@ class Text8(_Hutter):
         super(Text8, self).__init__(root, 'text8', seq_len, bos, eos, pad)
 
 
-@attr.s
 class _WordEmbeddingDataset(Dataset):
     """Dataset for word embedding training tasks.
 
@@ -116,90 +128,21 @@ class _WordEmbeddingDataset(Dataset):
 
     """
 
-    sentences = attr.ib()
-    window = attr.ib(default=5)
-    negative = attr.ib(default=5)
-    min_count = attr.ib(default=5)
-    sample = attr.ib(default=1e-3)
-    power = attr.ib(default=0.75)
+    def __init__(self, coded, idx_to_counts, window=5, negative=5, power=0.75):
+        self.idx_to_counts = idx_to_counts
+        self.window = window
+        self.negative = negative
+        self.power = power
 
-    # TODO
-    MAX_LINE_SIZE = attr.ib(default=1024)
-    MAX_VOCAB_SIZE = attr.ib(default=30000000)
-
-    def __attrs_post_init__(self):
-        super(_WordEmbeddingDataset, self).__init__()
-
-        # word hash to word index hash table datastructure
-        # TODO remove
-        # self._word2int = np.full((self.MAX_VOCAB_SIZE, ), -1, dtype=np.int32)
-
-        self._construct_token_idx_mapping()
-        self._prune_sentences()
-
-    def _construct_token_idx_mapping(self):
-        # Count token frequencies
-        counter = Counter(x for tup in self.sentences for x in tup)
-
-        # TODO May use Vocabulary class if adapted to keep track of token frequency
-        self._idx_to_token = []
-        self._idx_to_freq = []
-        self._token_to_idx = {}
-        for token, freq in counter.most_common():
-            if freq < self.min_count:
-                break
-            self._idx_to_token.append(token)
-            self._idx_to_freq.append(freq)
-            self._token_to_idx[token] = len(self._idx_to_token) - 1
-
-        self._idx_to_freq = np.array(self._idx_to_freq, dtype=np.int64)
-
-        # Probability table for subsampling frequent words (overall sum
-        # includes infrequent ones)
-        f = self._idx_to_freq / sum(counter.values())
-        self._idx_to_pdiscard = np.sqrt(self.sample / f) + self.sample / f
+        # Flatten the datastructure
+        self._sentence_boundaries = np.cumsum([len(s) for s in coded])
+        self.coded = np.concatenate(coded)
 
         # Smoothed unigram counts for negative sampling. Negatives can be drawn
         # by sampling a number in [0, self._smoothed_cumsum[-1]) and finding
         # the respective index with np.searchsorted.
         self._smoothed_token_freq_cumsum = np.cumsum(
-            (self._idx_to_freq**self.power).astype(np.int))
-
-    def _prune_sentences(self):
-        """Discard less-frequent words and downsample frequent words.
-
-        Applies min_count and sample settings.
-        """
-        # Delete less-frequent words and subsample frequent words
-        logging.info("Started pruning of less-frequent and "
-                     "very frequent words.")
-        start = time.time()
-        self._pruned_sentences = [[
-            token
-            for (random_draw, token) in zip(np.random.uniform(size=len(s)), s)
-            if token in self._token_to_idx and
-            not random_draw > self._idx_to_pdiscard[self._token_to_idx[token]]
-        ] for s in self.sentences]
-        logging.info("Finished pruning in "
-                     "{} seconds.".format(time.time() - start))
-
-        # Coding of tokens
-        # TODO combine the coding and pruning step
-        logging.info("Started coding of sentences.")
-        start = time.time()
-        coded = [
-            np.array(
-                [self._token_to_idx[token] for token in s], dtype=np.int64)
-            for s in self._pruned_sentences
-        ]
-        logging.info("Finished coding in "
-                     "{} seconds.".format(time.time() - start))
-
-        # Sentence boundaries
-        self._sentence_boundaries = np.cumsum([len(s) for s in coded])
-
-        # Store all tokens in one flat array
-        self.coded = np.concatenate(coded)
+            (self.idx_to_counts**self.power).astype(np.int))
 
     def __getitem__(self, idx):
         # Separate Implementation for SkipGram and CBOW
@@ -215,7 +158,6 @@ class _WordEmbeddingDataset(Dataset):
 
 
 class SkipGramWordEmbeddingDataset(_WordEmbeddingDataset):
-    # Processes around 150k items per second on 2017 MacBook Pro
     def __getitem__(self, idx):
         # Make sure idx is of shape (batch_size,)
         idx = np.array(idx).flatten()
@@ -256,11 +198,8 @@ def _build_sg_item(coded, idx, window, negative, token_freq_cumsum,
     # To keep equivalence to word2vec, weight by distance to window center http://www.aclweb.org/anthology/Q15-1016
 
     sentence_idx = np.searchsorted(sentence_boundaries, idx)
-    sentence_end = sentence_boundaries[sentence_idx]
-    if sentence_idx > 0:
-        sentence_start = sentence_boundaries[sentence_idx - 1]
-    else:
-        sentence_start = 0
+    sentence_start, sentence_end = get_sentence_start_end(
+        sentence_boundaries, sentence_idx)
 
     # TODO Throw away "sentences" for which assertion does not hold in Dataset class
     assert sentence_end - sentence_start > 1, "Can't sample positive target from sentence with only one word"

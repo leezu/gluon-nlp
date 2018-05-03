@@ -24,20 +24,32 @@ This example shows how to train word embeddings.
 """
 
 import argparse
-import logging
-import sys
+import functools
 import itertools
+import logging
+import math
+import multiprocessing as mp
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 
 import attr
 import mxnet as mx
+import numpy as np
 import tqdm
 from mxnet import gluon
-import numpy as np
 from scipy import stats
 
 import gluonnlp as nlp
-
 import sparse_ops
+
+try:
+    import ujson as json
+except ImportError:
+    logging.warning('ujson not installed. '
+                    ' Install via `pip install ujson` '
+                    'for faster data preprocessing.')
 
 try:
     import tqdm
@@ -163,12 +175,78 @@ class SkipGramModel(gluon.HybridBlock):
 ###############################################################################
 # Load data
 ###############################################################################
+@contextmanager
+def print_time(task):
+    start_time = time.time()
+    logging.info('Starting to {}'.format(task))
+    yield
+    logging.info('Finished to {} in {} seconds'.format(
+        task,
+        time.time() - start_time))
+
+
+def token_to_index(serialized_sentences, vocab):
+    sentences = json.loads(serialized_sentences)
+    coded = [
+        np.array([vocab[token] for token in s
+                  if token in vocab], dtype=np.int32) for s in sentences
+    ]
+    return coded
+
+
 def get_train_data(args):
     # TODO currently only supports skipgram and a single dataset
     # → Add Text8 Dataset to the toolkit
-    text8 = nlp.data.Text8(segment='train')
-    sgdataset = nlp.data.SkipGramWordEmbeddingDataset(text8)
-    return sgdataset
+    with print_time('read dataset to memory'):
+        sentences = nlp.data.Text8(segment='train')
+
+    # Count tokens
+    with print_time('count all tokens'):
+        counter = nlp.data.count_tokens(
+            itertools.chain.from_iterable(sentences))
+
+    vocab = nlp.Vocab(counter, unknown_token=None, padding_token=None,
+                      bos_token=None, eos_token=None)
+
+    # Split dataset into parts for fast multiprocessing (and serialize with
+    # json to avoid slow pickle operation)
+    num_workers = mp.cpu_count()
+    if len(sentences) == 1:
+        size = math.ceil(len(sentences[0]) / num_workers)
+        worker_sentences = [[sentences[0][i:i + size]]
+                            for i in range(0, len(sentences[0]), size)]
+    else:
+        size = math.ceil(len(sentences) / num_workers)
+        worker_sentences = [[sentences[i:i + size]]
+                            for i in range(0, len(sentences), size)]
+
+    worker_sentences = [json.dumps(s) for s in worker_sentences]
+    with mp.Pool(processes=num_workers) as pool:
+        with print_time('code all sentences'):
+            coded = pool.map(
+                functools.partial(token_to_index, vocab=vocab),
+                worker_sentences)
+            coded = sum(coded, [])
+            if len(sentences) == 1:
+                coded = [np.concatenate(coded)]
+
+    # Prune frequent words from sentences
+    with print_time('prune frequent words from sentences'):
+        frequent_tokens_subsampling_constant = 1e-3
+        idx_to_counts = np.array(vocab.idx_to_counts, dtype=int)
+        f = idx_to_counts / np.sum(idx_to_counts)
+        idx_to_pdiscard = (np.sqrt(frequent_tokens_subsampling_constant / f) +
+                           frequent_tokens_subsampling_constant / f)
+
+        # prune_sentences releases GIL so multi-threading is sufficient
+        prune_sentences = functools.partial(
+            nlp.data.word_embedding_training.prune_sentences,
+            idx_to_pdiscard=idx_to_pdiscard)
+        with ThreadPoolExecutor(max_workers=num_workers) as e:
+            coded = list(e.map(prune_sentences, coded))
+
+    sgdataset = nlp.data.SkipGramWordEmbeddingDataset(coded, idx_to_counts)
+    return sgdataset, vocab
 
 
 ###############################################################################
@@ -231,9 +309,9 @@ def evaluate_similarity(args, idx_to_vec, token_to_idx, dataset,
     return sr.correlation, len(dataset)
 
 
-def evaluate(args, net, training_dataset):
+def evaluate(args, net, vocab):
     context = get_context(args)
-    token_to_idx = training_dataset._token_to_idx
+    token_to_idx = vocab.token_to_idx
     idx_to_vec = net.embedding_in.weight.data(ctx=context[0])
 
     sr_correlation = 0
@@ -264,7 +342,7 @@ def evaluate(args, net, training_dataset):
 # Training code
 ###############################################################################
 def train(args):
-    train_dataset = get_train_data(args)
+    train_dataset, vocab = get_train_data(args)
     net, loss, kvstore = get_model(args, train_dataset)
     context = get_context(args)
 
@@ -337,7 +415,7 @@ def train(args):
                                             out=device_param)
 
             if i % args.eval_interval == 0:
-                eval_dict = evaluate(args, net, train_dataset)
+                eval_dict = evaluate(args, net, vocab)
 
                 t.set_postfix(
                     # TODO print number of grad norm > 0
