@@ -30,7 +30,7 @@ VERSION = find_version('gluonnlp', '__init__.py')
 
 requirements = [
     'numpy',
-    'attrs'
+    'numpy_indexed',
 ]
 
 setup(

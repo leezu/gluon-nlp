@@ -245,24 +245,20 @@ class SkipGramModel(gluon.Block):
                                       hidden_size=64,
                                       output_size=embedding_dim, num_layers=1)
 
-    def forward(self, source, target, token_indices, token_bytes, F=mx.nd):
+    def forward(self, source, target, token_bytes, source_subword,
+                target_subword, F=mx.nd):
         word_emb_in = self.embedding_in(source)
         word_emb_out = self.embedding_out(target)
 
-        token_indices = token_indices.astype(np.int)  # TODO
-        subword_emb_weights_data = mx.nd.max(
-            self.subword(token_bytes)[0], axis=1)
-        subword_emb_weights_shape = (self.num_tokens, self.embedding_dim)
-        subword_emb_weights = mx.nd.sparse.row_sparse_array(
-            (subword_emb_weights_data, token_indices),
-            ctx=subword_emb_weights_data.context,
-            shape=subword_emb_weights_shape)
+        subword_emb_weights = mx.nd.max(self.subword(token_bytes)[0], axis=1)
 
-        subword_emb_in = mx.nd.contrib.SparseEmbedding(
-            data=source, weight=subword_emb_weights, input_dim=self.num_tokens,
+        subword_emb_in = mx.nd.Embedding(
+            data=source_subword, weight=subword_emb_weights,
+            input_dim=subword_emb_weights.shape[0],
             output_dim=self.embedding_dim)
-        subword_emb_out = mx.nd.contrib.SparseEmbedding(
-            data=source, weight=subword_emb_weights, input_dim=self.num_tokens,
+        subword_emb_out = mx.nd.Embedding(
+            data=target_subword, weight=subword_emb_weights,
+            input_dim=subword_emb_weights.shape[0],
             output_dim=self.embedding_dim)
 
         emb_in = word_emb_in + subword_emb_in
@@ -371,12 +367,7 @@ def get_model(args, train_dataset):
     loss = gluon.loss.SigmoidBinaryCrossEntropyLoss()
     net.hybridize()
 
-    if len(context) > 1:
-        kvstore = mx.kv.create('device')
-    else:
-        kvstore = None
-
-    return net, loss, kvstore
+    return net, loss
 
 
 ###############################################################################
@@ -449,10 +440,20 @@ def evaluate(args, net, vocab):
 ###############################################################################
 def train(args):
     train_dataset, vocab = get_train_data(args)
-    net, loss, kvstore = get_model(args, train_dataset)
+    net, loss = get_model(args, train_dataset)
     context = get_context(args)
 
     params = list(net.collect_params().values())
+    sparse_params = [p for p in params if 'sparseembedding' in p.name]
+    dense_params = [p for p in params if 'sparseembedding' not in p.name]
+
+    if len(context) > 1:
+        sparse_kvstore = mx.kv.create('device')
+    else:
+        sparse_kvstore = None
+
+    dense_trainer = gluon.Trainer(dense_params, 'sgd',
+                                  {'learning_rate': args.lr})
 
     _kv_initialized = False
     indices = np.arange(len(train_dataset))
@@ -470,39 +471,44 @@ def train(args):
 
         num_workers = math.ceil(mp.cpu_count() * 0.8)
         executor = ThreadPoolExecutor(max_workers=num_workers)
-        for i, (source, target, label, token_indices, token_bytes) in zip(
-                t, executor.map(train_dataset.__getitem__, batches)):
+        for i, (source, target, label,
+                token_bytes, source_subword, target_subword) in zip(
+                    t, executor.map(train_dataset.__getitem__, batches)):
             source = gluon.utils.split_and_load(source, context)
             target = gluon.utils.split_and_load(target, context)
             label = gluon.utils.split_and_load(label, context)
 
             assert len(context) == 1  # TODO now only 1 GPU supported
-            token_indices = mx.nd.array(token_indices, ctx=context[0])
             token_bytes = mx.nd.array(token_bytes, ctx=context[0])
+            source_subword = mx.nd.array(source_subword, ctx=context[0])
+            target_subword = mx.nd.array(target_subword, ctx=context[0])
 
             with mx.autograd.record():
                 losses = [
-                    loss(net(
-                        X,
-                        Y,
-                        token_indices,
-                        token_bytes,
-                    ), Z) for X, Y, Z in zip(source, target, label)
+                    loss(
+                        net(X, Y, token_bytes, source_subword, target_subword),
+                        Z) for X, Y, Z in zip(source, target, label)
                 ]
             for l in losses:
                 l.backward()
 
             if not _kv_initialized and len(context) > 1:
                 for param_i, param in enumerate(params):
-                    kvstore.init(param_i, param.list_data()[0])
+                    sparse_kvstore.init(param_i, param.list_data()[0])
                 _kv_initialized = True
 
-            for param_i, param in enumerate(params):
+            # Training of dense params
+            dense_trainer.step(batch_size=args.batch_size)
+
+            # Training of sparse params
+            for param_i, param in enumerate(sparse_params):
                 if param.grad_req == 'null':
                     continue
 
+                # Synchronize devices
                 if len(context) > 1:
-                    kvstore.push(param_i, param.list_grad(), priority=-param_i)
+                    sparse_kvstore.push(param_i, param.list_grad(),
+                                        priority=-param_i)
 
                     # Get indices updated rows
                     row_ids = mx.nd.concat(*[
@@ -511,10 +517,11 @@ def train(args):
                     ], dim=0)
 
                     # Share gradients
-                    kvstore.row_sparse_pull(param_i, param.list_grad(),
-                                            priority=-param_i, row_ids=row_ids)
+                    sparse_kvstore.row_sparse_pull(param_i, param.list_grad(),
+                                                   priority=-param_i,
+                                                   row_ids=row_ids)
 
-                # Update params
+                # Update of sparse params
                 for device_param, device_grad in zip(param.list_data(),
                                                      param.list_grad()):
                     if args.dont_normalize_gradient:
@@ -545,6 +552,9 @@ def train(args):
                         net.embedding_in.weight.grad(
                             ctx=ctx).as_in_context(mx.cpu()).norm()
                         for ctx in context).asscalar(),
+                    dense_grad=sum(
+                        p.grad(ctx=context[0]).norm()
+                        for p in dense_params).asscalar(),
                     data=net.embedding_in.weight.data(
                         ctx=context[0]).as_in_context(
                             mx.cpu()).tostype("default").norm(

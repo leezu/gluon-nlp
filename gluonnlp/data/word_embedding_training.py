@@ -28,6 +28,7 @@ import zipfile
 
 import numba
 import numpy as np
+import numpy_indexed as npi
 from mxnet.gluon.data.dataset import Dataset
 from mxnet.gluon.utils import check_sha1, download
 
@@ -187,11 +188,18 @@ class SkipGramWordEmbeddingDataset(_WordEmbeddingDataset):
              self.coded, idx, self.window, self.negative,
              self._smoothed_token_freq_cumsum, self._sentence_boundaries,
              self.idx_to_bytes)
+        source_subword = npi.remap(
+            source.flatten(), unique_token_idxs,
+            np.arange(unique_token_idxs.shape[0])).reshape(source.shape)
+        target_subword = npi.remap(
+            target.flatten(), unique_token_idxs,
+            np.arange(unique_token_idxs.shape[0])).reshape(target.shape)
         if len(idx) == 1:
-            return (source[0], target[0], label[0], unique_token_idxs,
-                    token_bytes)
+            return (source[0], target[0], label[0], token_bytes,
+                    source_subword[0], target_subword[0])
         else:
-            return source, target, label, unique_token_idxs, token_bytes
+            return (source, target, label, token_bytes, source_subword,
+                    target_subword)
 
 
 @numba.njit(nogil=True)
