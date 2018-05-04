@@ -37,7 +37,7 @@ from .dataset import CorpusDataset
 ###############################################################################
 # Preprocessing utilities
 ###############################################################################
-@numba.njit()
+@numba.njit(nogil=True)
 def get_sentence_start_end(sentence_boundaries, sentence_idx):
     end = sentence_boundaries[sentence_idx]
     if sentence_idx == 0:
@@ -47,7 +47,7 @@ def get_sentence_start_end(sentence_boundaries, sentence_idx):
     return start, end
 
 
-@numba.njit()
+@numba.njit(nogil=True)
 def prune_sentences(coded, idx_to_pdiscard):
     '''Downsample frequent words.'''
     pruned = []
@@ -170,7 +170,7 @@ class SkipGramWordEmbeddingDataset(_WordEmbeddingDataset):
             return source, target, label
 
 
-@numba.njit()
+@numba.njit(nogil=True)
 def _build_sg_batch(coded, idxs, window, negative, token_freq_cumsum,
                     sentence_boundaries):
     batch_size = len(idxs)
@@ -191,7 +191,7 @@ def _build_sg_batch(coded, idxs, window, negative, token_freq_cumsum,
     return sources, targets, labels
 
 
-@numba.njit()
+@numba.njit(nogil=True)
 def _build_sg_item(coded, idx, window, negative, token_freq_cumsum,
                    sentence_boundaries):
     # TODO alternative to sampling, return all positive targets from fixed window size (to keep batch shapes identical)

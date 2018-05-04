@@ -349,17 +349,23 @@ def train(args):
     params = list(net.collect_params().values())
 
     _kv_initialized = False
+    indices = np.arange(len(train_dataset))
     for epoch in range(args.epochs):
-        sampler = gluon.data.RandomSampler(len(train_dataset))
-        batch_sampler = gluon.data.BatchSampler(sampler, args.batch_size,
-                                                'discard')
-        data_loader = (train_dataset[batch] for batch in batch_sampler)
-        if tqdm is not None:
-            t = tqdm.trange(len(batch_sampler), smoothing=1)
-        else:
-            t = range(len(batch_sampler))
+        np.random.shuffle(indices)
+        batches = [
+            indices[i:i + args.batch_size]
+            for i in range(0, len(indices), args.batch_size)
+        ]
 
-        for i, (source, target, label) in zip(t, data_loader):
+        if tqdm is not None:
+            t = tqdm.trange(len(batches), smoothing=1)
+        else:
+            t = range(len(batches))
+
+        num_workers = math.ceil(mp.cpu_count() * 0.8)
+        executor = ThreadPoolExecutor(max_workers=num_workers)
+        for i, (source, target, label) in zip(t, \
+                executor.map(train_dataset.__getitem__, batches)):
             source = gluon.utils.split_and_load(source, context)
             target = gluon.utils.split_and_load(target, context)
             label = gluon.utils.split_and_load(label, context)
@@ -430,6 +436,8 @@ def train(args):
                             mx.cpu()).tostype("default").norm(
                                 axis=1).mean().asscalar(),
                     **eval_dict)
+
+        executor.shutdown()
 
 
 if __name__ == '__main__':
