@@ -140,7 +140,8 @@ class AWDRNN(Block):
         """
         encoded = self.embedding(inputs)
         if not begin_state:
-            begin_state = self.begin_state(batch_size=inputs.shape[1])
+            begin_state = self.begin_state(batch_size=inputs.shape[1],
+                                           ctx=inputs.context)
         out_states = []
         for i, (e, s) in enumerate(zip(self.encoder, begin_state)):
             encoded, state = e(encoded, s)
@@ -226,7 +227,8 @@ class StandardRNN(Block):
         :py:class:`NDArray` or :py:class:`Symbol`."""
         encoded = self.embedding(inputs)
         if not begin_state:
-            begin_state = self.begin_state(batch_size=inputs.shape[1])
+            begin_state = self.begin_state(batch_size=inputs.shape[1],
+                                           ctx=inputs.context)
         encoded, state = self.encoder(encoded, begin_state)
         if self._dropout:
             encoded = nd.Dropout(encoded, p=self._dropout, axes=(0,))
