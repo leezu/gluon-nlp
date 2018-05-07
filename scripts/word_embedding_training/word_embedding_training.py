@@ -226,45 +226,20 @@ class SubwordRNN(Block):
         return out, state
 
 
-class SkipGramModel(gluon.Block):
-    def __init__(self, num_tokens, embedding_dim, **kwargs):
+class SubwordEmbeddings(gluon.Block):
+    def __init__(self, embedding_dim, **kwargs):
         super().__init__(**kwargs)
 
-        self.num_tokens = num_tokens
         self.embedding_dim = embedding_dim
 
         with self.name_scope():
-            # Training of embedding lookup matrix
-            self.embedding_in = gluon.nn.SparseEmbedding(
-                self.num_tokens, self.embedding_dim)
-            self.embedding_out = gluon.nn.SparseEmbedding(
-                self.num_tokens, self.embedding_dim)
-
-            # Training of subword embedding function
             self.subword = SubwordRNN(mode='lstm', embed_size=32,
                                       hidden_size=64,
                                       output_size=embedding_dim, num_layers=1)
 
-    def forward(self, source, target, token_bytes, source_subword,
-                target_subword, F=mx.nd):
-        word_emb_in = self.embedding_in(source)
-        word_emb_out = self.embedding_out(target)
-
+    def forward(self, token_bytes, F=mx.nd):
         subword_emb_weights = mx.nd.max(self.subword(token_bytes)[0], axis=1)
-
-        subword_emb_in = mx.nd.Embedding(
-            data=source_subword, weight=subword_emb_weights,
-            input_dim=subword_emb_weights.shape[0],
-            output_dim=self.embedding_dim)
-        subword_emb_out = mx.nd.Embedding(
-            data=target_subword, weight=subword_emb_weights,
-            input_dim=subword_emb_weights.shape[0],
-            output_dim=self.embedding_dim)
-
-        emb_in = word_emb_in + subword_emb_in
-        emb_out = word_emb_out + subword_emb_out
-
-        return F.batch_dot(emb_in, emb_out.swapaxes(1, 2))
+        return subword_emb_weights
 
 
 ###############################################################################
@@ -357,17 +332,29 @@ def get_train_data(args):
 def get_model(args, train_dataset):
     num_tokens = train_dataset.num_tokens
 
-    net = SkipGramModel(num_tokens=num_tokens, embedding_dim=args.emsize)
+    embedding_in = gluon.nn.SparseEmbedding(num_tokens, args.emsize)
+    subword_net = SubwordEmbeddings(embedding_dim=args.emsize)
+    embedding_out = gluon.nn.SparseEmbedding(num_tokens, args.emsize)
 
     context = get_context(args)
+    embeddings_context = [context[0]]
     if args.normalized_initialization:
-        net.initialize(mx.init.Uniform(scale=1 / args.emsize), ctx=context)
+        embedding_in.initialize(
+            mx.init.Uniform(scale=1 / args.emsize), ctx=embeddings_context)
+        embedding_out.initialize(
+            mx.init.Uniform(scale=1 / args.emsize), ctx=embeddings_context)
     else:
-        net.initialize(mx.init.Uniform(), ctx=context)
-    loss = gluon.loss.SigmoidBinaryCrossEntropyLoss()
-    net.hybridize()
+        embedding_in.initialize(mx.init.Uniform(), ctx=embeddings_context)
+        embedding_out.initialize(mx.init.Uniform(), ctx=embeddings_context)
+    subword_net.initialize(mx.init.Xavier(), ctx=context)
 
-    return net, loss
+    loss = gluon.loss.SigmoidBinaryCrossEntropyLoss()
+
+    embedding_in.hybridize()
+    embedding_out.hybridize()
+    subword_net.hybridize()
+
+    return embedding_in, embedding_out, subword_net, loss
 
 
 ###############################################################################
@@ -406,10 +393,10 @@ def evaluate_similarity(args, idx_to_vec, token_to_idx, dataset,
     return sr.correlation, len(dataset)
 
 
-def evaluate(args, net, vocab):
+def evaluate(args, embedding_in, vocab):
     context = get_context(args)
     token_to_idx = vocab.token_to_idx
-    idx_to_vec = net.embedding_in.weight.data(ctx=context[0])
+    idx_to_vec = embedding_in.weight.data(ctx=context[0])
 
     sr_correlation = 0
     for dataset_name in args.similarity_datasets:
@@ -440,22 +427,17 @@ def evaluate(args, net, vocab):
 ###############################################################################
 def train(args):
     train_dataset, vocab = get_train_data(args)
-    net, loss = get_model(args, train_dataset)
+    embedding_in, embedding_out, subword_net, loss_function = get_model(
+        args, train_dataset)
     context = get_context(args)
 
-    params = list(net.collect_params().values())
-    sparse_params = [p for p in params if 'sparseembedding' in p.name]
-    dense_params = [p for p in params if 'sparseembedding' not in p.name]
-
-    if len(context) > 1:
-        sparse_kvstore = mx.kv.create('device')
-    else:
-        sparse_kvstore = None
+    sparse_params = list(embedding_in.collect_params().values()) + list(
+        embedding_out.collect_params().values())
+    dense_params = list(subword_net.collect_params().values())
 
     dense_trainer = gluon.Trainer(dense_params, 'sgd',
                                   {'learning_rate': args.lr})
 
-    _kv_initialized = False
     indices = np.arange(len(train_dataset))
     for epoch in range(args.epochs):
         np.random.shuffle(indices)
@@ -471,31 +453,48 @@ def train(args):
 
         num_workers = math.ceil(mp.cpu_count() * 0.8)
         executor = ThreadPoolExecutor(max_workers=num_workers)
-        for i, (source, target, label,
-                token_bytes, source_subword, target_subword) in zip(
-                    t, executor.map(train_dataset.__getitem__, batches)):
-            source = gluon.utils.split_and_load(source, context)
-            target = gluon.utils.split_and_load(target, context)
-            label = gluon.utils.split_and_load(label, context)
+        for i, (source, target, label, token_bytes, source_subword) in zip(
+                t, executor.map(train_dataset.__getitem__, batches)):
+            mx.nd.waitall()
 
-            assert len(context) == 1  # TODO now only 1 GPU supported
-            token_bytes = mx.nd.array(token_bytes, ctx=context[0])
-            source_subword = mx.nd.array(source_subword, ctx=context[0])
-            target_subword = mx.nd.array(target_subword, ctx=context[0])
+            # Load data for training embedding matrix to context[0]
+            source = gluon.utils.split_and_load(source, [context[0]])[0]
+            target = gluon.utils.split_and_load(target, [context[0]])[0]
+            label = gluon.utils.split_and_load(label, [context[0]])[0]
+
+            # Load indices for looking up subword embedding to context[0]
+            source_subword = gluon.utils.split_and_load(
+                source_subword, [context[0]])[0]
+
+            # Split and load subword info to all GPUs for accelerated computation
+            token_bytes = gluon.utils.split_and_load(token_bytes, context,
+                                                     even_split=False)
 
             with mx.autograd.record():
-                losses = [
-                    loss(
-                        net(X, Y, token_bytes, source_subword, target_subword),
-                        Z) for X, Y, Z in zip(source, target, label)
-                ]
-            for l in losses:
-                l.backward()
+                # Compute subword embeddings from subword info (byte sequences)
+                subword_embedding_weights = []
+                for token_bytes_ctx in token_bytes:
+                    subword_embedding_weights.append(
+                        subword_net(token_bytes_ctx).as_in_context(context[0]))
+                subword_embedding_weights = mx.nd.concat(
+                    *subword_embedding_weights, dim=0)
 
-            if not _kv_initialized and len(context) > 1:
-                for param_i, param in enumerate(params):
-                    sparse_kvstore.init(param_i, param.list_data()[0])
-                _kv_initialized = True
+                # Look up subword embeddings of batch
+                subword_embeddings = mx.nd.Embedding(
+                    data=source_subword, weight=subword_embedding_weights,
+                    input_dim=subword_embedding_weights.shape[0],
+                    output_dim=args.emsize)
+
+                # Look up token embeddings of batch
+                word_embeddings = embedding_in(source)
+
+                emb_in = subword_embeddings + word_embeddings
+                emb_out = embedding_out(target)
+
+                pred = mx.nd.batch_dot(emb_in, emb_out.swapaxes(1, 2))
+                loss = loss_function(pred, label)
+
+            loss.backward()
 
             # Training of dense params
             dense_trainer.step(batch_size=args.batch_size)
@@ -504,22 +503,6 @@ def train(args):
             for param_i, param in enumerate(sparse_params):
                 if param.grad_req == 'null':
                     continue
-
-                # Synchronize devices
-                if len(context) > 1:
-                    sparse_kvstore.push(param_i, param.list_grad(),
-                                        priority=-param_i)
-
-                    # Get indices updated rows
-                    row_ids = mx.nd.concat(*[
-                        p.indices.as_in_context(mx.cpu())
-                        for p in param.list_grad()
-                    ], dim=0)
-
-                    # Share gradients
-                    sparse_kvstore.row_sparse_pull(param_i, param.list_grad(),
-                                                   priority=-param_i,
-                                                   row_ids=row_ids)
 
                 # Update of sparse params
                 for device_param, device_grad in zip(param.list_data(),
@@ -542,20 +525,17 @@ def train(args):
                                             out=device_param)
 
             if i % args.eval_interval == 0:
-                eval_dict = evaluate(args, net, vocab)
+                eval_dict = evaluate(args, embedding_in, vocab)
 
                 t.set_postfix(
                     # TODO print number of grad norm > 0
-                    loss=sum(l.sum().as_in_context(mx.cpu())
-                             for l in losses).asscalar(),
-                    grad=sum(
-                        net.embedding_in.weight.grad(
-                            ctx=ctx).as_in_context(mx.cpu()).norm()
-                        for ctx in context).asscalar(),
+                    loss=loss.sum().asscalar(),
+                    grad=embedding_in.weight.grad(context[0]).as_in_context(
+                        mx.cpu()).norm().asscalar(),
                     dense_grad=sum(
                         p.grad(ctx=context[0]).norm()
                         for p in dense_params).asscalar(),
-                    data=net.embedding_in.weight.data(
+                    data=embedding_in.weight.data(
                         ctx=context[0]).as_in_context(
                             mx.cpu()).tostype("default").norm(
                                 axis=1).mean().asscalar(),

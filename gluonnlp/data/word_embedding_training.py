@@ -191,15 +191,11 @@ class SkipGramWordEmbeddingDataset(_WordEmbeddingDataset):
         source_subword = npi.remap(
             source.flatten(), unique_token_idxs,
             np.arange(unique_token_idxs.shape[0])).reshape(source.shape)
-        target_subword = npi.remap(
-            target.flatten(), unique_token_idxs,
-            np.arange(unique_token_idxs.shape[0])).reshape(target.shape)
         if len(idx) == 1:
             return (source[0], target[0], label[0], token_bytes,
-                    source_subword[0], target_subword[0])
+                    source_subword[0])
         else:
-            return (source, target, label, token_bytes, source_subword,
-                    target_subword)
+            return (source, target, label, token_bytes, source_subword)
 
 
 @numba.njit(nogil=True)
