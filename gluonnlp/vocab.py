@@ -18,17 +18,18 @@
 # under the License.
 
 # pylint: disable=consider-iterating-dictionary
-
 """Vocabulary."""
 from __future__ import absolute_import
 from __future__ import print_function
 
-__all__ = ['Vocab']
+__all__ = ['Vocab', 'SubwordVocab']
 
 import json
 import warnings
 
 from mxnet import nd
+import numpy as np
+import numpy_indexed as npi
 
 from .data.utils import DefaultLookupDict
 from . import _constants as C
@@ -134,8 +135,9 @@ class Vocab(object):
 
     """
 
-    def __init__(self, counter=None, max_size=None, min_freq=1, unknown_token=C.UNK_TOKEN,
-                 padding_token=C.PAD_TOKEN, bos_token=C.BOS_TOKEN, eos_token=C.EOS_TOKEN,
+    def __init__(self, counter=None, max_size=None, min_freq=1,
+                 unknown_token=C.UNK_TOKEN, padding_token=C.PAD_TOKEN,
+                 bos_token=C.BOS_TOKEN, eos_token=C.EOS_TOKEN,
                  reserved_tokens=None):
 
         # Sanity checks.
@@ -164,7 +166,8 @@ class Vocab(object):
         self._index_special_tokens(unknown_token, special_tokens)
 
         if counter:
-            self._index_counter_keys(counter, unknown_token, special_tokens, max_size, min_freq)
+            self._index_counter_keys(counter, unknown_token, special_tokens,
+                                     max_size, min_freq)
 
         self._embedding = None
 
@@ -184,10 +187,11 @@ class Vocab(object):
             self._token_to_idx = DefaultLookupDict(C.UNK_IDX)
         else:
             self._token_to_idx = {}
-        self._token_to_idx.update((token, idx) for idx, token in enumerate(self._idx_to_token))
+        self._token_to_idx.update(
+            (token, idx) for idx, token in enumerate(self._idx_to_token))
 
-    def _index_counter_keys(self, counter, unknown_token, special_tokens, max_size,
-                            min_freq):
+    def _index_counter_keys(self, counter, unknown_token, special_tokens,
+                            max_size, min_freq):
         """Indexes keys of `counter`.
 
 
@@ -195,7 +199,8 @@ class Vocab(object):
         `min_freq`.
         """
 
-        unknown_and_special_tokens = set(special_tokens) if special_tokens else set()
+        unknown_and_special_tokens = set(
+            special_tokens) if special_tokens else set()
 
         if unknown_token:
             unknown_and_special_tokens.add(unknown_token)
@@ -203,8 +208,9 @@ class Vocab(object):
         token_freqs = sorted(counter.items(), key=lambda x: x[0])
         token_freqs.sort(key=lambda x: x[1], reverse=True)
 
-        token_cap = len(unknown_and_special_tokens) + (
-            len(counter) if not max_size else max_size)
+        token_cap = len(unknown_and_special_tokens) + (len(counter)
+                                                       if not max_size else
+                                                       max_size)
 
         for token, freq in token_freqs:
             if freq < min_freq or len(self._idx_to_token) == token_cap:
@@ -328,7 +334,8 @@ class Vocab(object):
                 col_end = col_start + embs.idx_to_vec.shape[1]
                 # Cancatenate vectors of the unknown token.
                 new_idx_to_vec[0, col_start:col_end] = embs[0]
-                new_idx_to_vec[1:, col_start:col_end] = embs[self._idx_to_token[1:]]
+                new_idx_to_vec[1:, col_start:col_end] = embs[
+                    self._idx_to_token[1:]]
                 col_start = col_end
 
         new_embedding._idx_to_vec = new_idx_to_vec
@@ -360,7 +367,9 @@ class Vocab(object):
         tokens = []
         for idx in indices:
             if not isinstance(idx, int) or idx > max_idx:
-                raise ValueError('Token index {} in the provided `indices` is invalid.'.format(idx))
+                raise ValueError(
+                    'Token index {} in the provided `indices` is invalid.'.
+                    format(idx))
             else:
                 tokens.append(self._idx_to_token[idx])
 
@@ -403,8 +412,8 @@ class Vocab(object):
         return self[tokens]
 
     def __repr__(self):
-        return 'Vocab(size={}, unk="{}", reserved="{}")'.format(len(self), self._unknown_token,
-                                                                self._reserved_tokens)
+        return 'Vocab(size={}, unk="{}", reserved="{}")'.format(
+            len(self), self._unknown_token, self._reserved_tokens)
 
     def to_json(self):
         """Serialize Vocab object to json string.
@@ -449,10 +458,52 @@ class Vocab(object):
         vocab._idx_to_counts = vocab_dict.get('idx_to_counts')
         vocab._token_to_idx = vocab_dict.get('token_to_idx')
         if unknown_token:
-            vocab._token_to_idx = DefaultLookupDict(vocab._token_to_idx[unknown_token],
-                                                    vocab._token_to_idx)
+            vocab._token_to_idx = DefaultLookupDict(
+                vocab._token_to_idx[unknown_token], vocab._token_to_idx)
         vocab._reserved_tokens = vocab_dict.get('reserved_tokens')
         vocab._padding_token = vocab_dict.get('padding_token')
         vocab._bos_token = vocab_dict.get('bos_token')
         vocab._eos_token = vocab_dict.get('eos_token')
         return vocab
+
+
+class SubwordVocab(object):
+    def __init__(self, idx_to_token):
+        idx_to_bytes = [
+            np.frombuffer(token.encode('utf-8'), dtype=np.uint8)
+            for token in idx_to_token
+        ]
+        max_bytes_len = max(len(s) for s in idx_to_bytes)
+        self.idx_to_bytes = np.stack(
+            np.pad(b, (0, max_bytes_len - len(b)), mode='constant')
+            for b in idx_to_bytes)
+
+    def to_subwords(self, indices=None, unknown=None):
+        if isinstance(indices, nd.NDArray):
+            indices = indices.asnumpy()
+        elif isinstance(indices, np.ndarray):
+            pass
+        else:
+            indices = np.array(indices)
+
+        # Find the subword information for unique tokens
+        unique_token_indices = np.unique(indices)
+        token_bytes = self.idx_to_bytes[unique_token_indices.astype(np.int32)]
+
+        return token_bytes, unique_token_indices
+
+    def remap_indices(self, unique_token_indices, indices):
+        if isinstance(indices, nd.NDArray):
+            indices = indices.asnumpy()
+        elif isinstance(indices, np.ndarray):
+            pass
+        else:
+            indices = np.array(indices)
+
+        subword_indices = npi.remap(
+            indices.flatten(), unique_token_indices,
+            np.arange(unique_token_indices.shape[0])).reshape(indices.shape)
+        return subword_indices
+
+    def __len__(self):
+        return len(self.idx_to_bytes)

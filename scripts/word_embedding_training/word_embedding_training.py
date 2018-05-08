@@ -316,14 +316,10 @@ def get_train_data(args):
             coded = list(e.map(prune_sentences, coded))
 
     # Get index to byte mapping from vocab
-    idx_to_bytes = [
-        np.frombuffer(token.encode('utf-8'), dtype=np.uint8)
-        for token in vocab.idx_to_token
-    ]
-
-    sgdataset = nlp.data.SkipGramWordEmbeddingDataset(coded, idx_to_counts,
-                                                      idx_to_bytes)
-    return sgdataset, vocab
+    subword_vocab = nlp.SubwordVocab(vocab.idx_to_token)
+    sgdataset = nlp.data.SkipGramWordEmbeddingDataset(
+        coded, idx_to_counts, subword_vocab.idx_to_bytes)
+    return sgdataset, vocab, subword_vocab
 
 
 ###############################################################################
@@ -360,22 +356,44 @@ def get_model(args, train_dataset):
 ###############################################################################
 # Evaluation code
 ###############################################################################
-def evaluate_similarity(args, idx_to_vec, token_to_idx, dataset,
-                        similarity_function='CosineSimilarity'):
+def evaluate_similarity(args, vocab, subword_vocab, embedding_in, subword_net,
+                        dataset, similarity_function='CosineSimilarity'):
     """Evaluation on similarity task."""
     initial_length = len(dataset)
     dataset = [
-        d for d in dataset if d[0] in token_to_idx and d[1] in token_to_idx
+        d for d in dataset
+        if d[0] in vocab.token_to_idx and d[1] in vocab.token_to_idx
     ]
     num_dropped = initial_length - len(dataset)
     if num_dropped:
         logging.debug('Dropped %s pairs from %s as the were OOV.', num_dropped,
                       dataset.__class__.__name__)
 
-    dataset_coded = [[token_to_idx[d[0]], token_to_idx[d[1]], d[2]]
-                     for d in dataset]
+    dataset_coded = [[
+        vocab.token_to_idx[d[0]], vocab.token_to_idx[d[1]], d[2]
+    ] for d in dataset]
     words1, words2, scores = zip(*dataset_coded)
 
+    context = get_context(args)
+
+    # Prepare remapping of indices for use with subwords
+    token_bytes, unique_indices = subword_vocab.to_subwords(
+        indices=words1 + words2)
+    words1 = subword_vocab.remap_indices(unique_indices, words1)
+    words2 = subword_vocab.remap_indices(unique_indices, words2)
+
+    # Get vectors from Subword Network
+    token_bytes = mx.nd.array(token_bytes, ctx=context[0])
+    subword_idx_to_vec = subword_net(token_bytes)
+
+    # Get vectors from TokenEmbedding
+    token_idx_to_vec = embedding_in.weight.data(ctx=context[0]).retain(
+        mx.nd.array(unique_indices, ctx=context[0])).data
+
+    # Combine vectors
+    idx_to_vec = subword_idx_to_vec + token_idx_to_vec
+
+    # Evaluate
     evaluator = nlp.embedding.evaluation.WordEmbeddingSimilarity(
         idx_to_vec=idx_to_vec, similarity_function=similarity_function)
     context = get_context(args)
@@ -393,11 +411,7 @@ def evaluate_similarity(args, idx_to_vec, token_to_idx, dataset,
     return sr.correlation, len(dataset)
 
 
-def evaluate(args, embedding_in, vocab):
-    context = get_context(args)
-    token_to_idx = vocab.token_to_idx
-    idx_to_vec = embedding_in.weight.data(ctx=context[0])
-
+def evaluate(args, embedding_in, subword_net, vocab, subword_vocab):
     sr_correlation = 0
     for dataset_name in args.similarity_datasets:
         if stats is None:
@@ -415,8 +429,8 @@ def evaluate(args, embedding_in, vocab):
             for similarity_function in args.similarity_functions:
                 logging.debug('Evaluating with  %s', similarity_function)
                 result, num_samples = evaluate_similarity(
-                    args, idx_to_vec, token_to_idx, dataset,
-                    similarity_function)
+                    args, vocab, subword_vocab, embedding_in, subword_net,
+                    dataset, similarity_function)
                 sr_correlation += result
     sr_correlation /= len(args.similarity_datasets)
     return {'SpearmanR': sr_correlation}
@@ -426,7 +440,7 @@ def evaluate(args, embedding_in, vocab):
 # Training code
 ###############################################################################
 def train(args):
-    train_dataset, vocab = get_train_data(args)
+    train_dataset, vocab, subword_vocab = get_train_data(args)
     embedding_in, embedding_out, subword_net, loss_function = get_model(
         args, train_dataset)
     context = get_context(args)
@@ -525,7 +539,8 @@ def train(args):
                                             out=device_param)
 
             if i % args.eval_interval == 0:
-                eval_dict = evaluate(args, embedding_in, vocab)
+                eval_dict = evaluate(args, embedding_in, subword_net, vocab,
+                                     subword_vocab)
 
                 t.set_postfix(
                     # TODO print number of grad norm > 0

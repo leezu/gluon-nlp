@@ -143,7 +143,10 @@ class _WordEmbeddingDataset(Dataset):
 
     def __init__(self, coded, idx_to_counts, idx_to_bytes, window=5,
                  negative=5, power=0.75):
+        assert isinstance(idx_to_bytes, np.ndarray)
+
         self.idx_to_counts = idx_to_counts
+        self.idx_to_bytes = idx_to_bytes
         self.window = window
         self.negative = negative
         self.power = power
@@ -151,14 +154,6 @@ class _WordEmbeddingDataset(Dataset):
         # Flatten the datastructures
         self._sentence_boundaries = np.cumsum([len(s) for s in coded])
         self.coded = np.concatenate(coded)
-
-        if idx_to_bytes is not None:
-            max_bytes_len = max(len(s) for s in idx_to_bytes)
-            self.idx_to_bytes = np.stack(
-                np.pad(b, (0, max_bytes_len - len(b)), mode='constant')
-                for b in idx_to_bytes)
-        else:
-            self.idx_to_bytes = idx_to_bytes
 
         # Smoothed unigram counts for negative sampling. Negatives can be drawn
         # by sampling a number in [0, self._smoothed_cumsum[-1]) and finding
