@@ -495,6 +495,9 @@ class SubwordVocab(object):
         unique_token_indices = np.unique(indices)
         token_bytes = self.idx_to_bytes[unique_token_indices.astype(np.int32)]
 
+        # TNC layout
+        token_bytes = token_bytes.T
+
         return token_bytes, unique_token_indices
 
     def remap_indices(self, unique_token_indices, indices):

@@ -39,7 +39,6 @@ import mxnet as mx
 import numpy as np
 import tqdm
 from mxnet import gluon
-from mxnet.gluon import nn, Block
 from scipy import stats
 
 import gluonnlp as nlp
@@ -150,7 +149,7 @@ def get_context(args):
 ###############################################################################
 # Model definitions
 ###############################################################################
-class SubwordRNN(Block):
+class SubwordRNN(gluon.HybridBlock):
     """RNN model for sub-word embedding inference.
 
     Parameters
@@ -164,83 +163,123 @@ class SubwordRNN(Block):
         Number of hidden units for RNN.
     output_size : int
         Dimension of embedding vectors for subword units.
-    num_layers : int
-        Number of RNN layers.
     vocab_size : int, default 2**8
         Size of the input vocabulary. Usually the input vocabulary is the
         number of distinct bytes.
-    dropout : float
+    dropout : float  # TODO
         Dropout rate to use for encoder output.
 
     """
 
-    def __init__(self, mode, embed_size, hidden_size, num_layers, output_size,
+    def __init__(self, mode, length, embed_size, hidden_size, output_size,
                  vocab_size=256, dropout=0.5, **kwargs):
         super(SubwordRNN, self).__init__(**kwargs)
         self._mode = mode
+        self._length = length
         self._embed_size = embed_size
         self._hidden_size = hidden_size
         self._output_size = output_size
-        self._num_layers = num_layers
         self._dropout = dropout
         self._vocab_size = vocab_size
 
+        self._bidirectional = True
+        self._weight_dropout = 0
+        self._var_drop_in = 0
+        self._var_drop_state = 0
+        self._var_drop_out = 0
+
         with self.name_scope():
             self.embedding = self._get_embedding()
-            self.encoder = self._get_encoder()
+            self.cell = self._get_cell(
+                mode=self._mode, bidirectional=self._bidirectional,
+                input_size=self._embed_size, hidden_size=self._hidden_size,
+                weight_dropout=self._weight_dropout,
+                var_drop_in=self._var_drop_in,
+                var_drop_state=self._var_drop_state,
+                var_drop_out=self._var_drop_out)
             self.decoder = self._get_decoder()
 
     def _get_embedding(self):
-        embedding = nn.HybridSequential()
+        embedding = gluon.nn.HybridSequential()
         with embedding.name_scope():
             embedding.add(
-                nn.Embedding(self._vocab_size, self._embed_size,
-                             weight_initializer=mx.init.Uniform(0.1)))
+                gluon.nn.Embedding(self._vocab_size, self._embed_size,
+                                   weight_initializer=mx.init.Uniform(0.1)))
             if self._dropout:
-                embedding.add(nn.Dropout(self._dropout))
+                embedding.add(gluon.nn.Dropout(self._dropout))
         return embedding
 
-    def _get_encoder(self):
-        return nlp.model.utils._get_rnn_layer(
-            self._mode, self._num_layers, self._embed_size, self._hidden_size,
-            self._dropout, 0)
+    @staticmethod  # TODO waiting for mxnet RNN HybdridBlock support
+    def _get_cell(*, mode, bidirectional, input_size, hidden_size,
+                  weight_dropout, var_drop_in, var_drop_state, var_drop_out):
+        cells = []  # Collect 1 or 2 cells depending on bidirectional
+        for i in range(1 if not bidirectional else 2):
+            if mode == 'rnn_relu':
+                cell = gluon.rnn.RNNCell(hidden_size, 'relu',
+                                         input_size=input_size)
+            elif mode == 'rnn_tanh':
+                cell = gluon.rnn.RNNCell(hidden_size, 'tanh',
+                                         input_size=input_size)
+            elif mode == 'lstm':
+                cell = gluon.rnn.LSTMCell(hidden_size, input_size=input_size)
+            elif mode == 'gru':
+                cell = gluon.rnn.GRUCell(hidden_size, input_size=input_size)
+
+            if var_drop_in + var_drop_state + var_drop_out != 0:
+                cell = gluon.contrib.rnn.VariationalDropoutCell(
+                    cell, var_drop_in, var_drop_state, var_drop_out)
+
+            if weight_dropout:
+                nlp.model.utils.apply_weight_drop(cell, 'h2h_weight',
+                                                  rate=weight_dropout)
+
+            cells.append(cell)
+
+        if bidirectional:
+            cell = gluon.rnn.BidirectionalCell(*cells)
+        else:
+            cell = cells[0]
+
+        return cell
 
     def _get_decoder(self):
-        output = nn.HybridSequential()
+        output = gluon.nn.HybridSequential()
         with output.name_scope():
-            output.add(nn.Dense(self._output_size, flatten=False))
+            output.add(gluon.nn.Dense(self._output_size, flatten=False))
         return output
 
     def begin_state(self, *args, **kwargs):
         return self.encoder.begin_state(*args, **kwargs)
 
-    def forward(self, inputs, begin_state=None):  # pylint: disable=arguments-differ
+    def hybrid_forward(self, F, inputs, begin_state=None):  # pylint: disable=arguments-differ
         """Defines the forward computation. Arguments can be either
         :py:class:`NDArray` or :py:class:`Symbol`."""
         encoded = self.embedding(inputs)
-        if not begin_state:
-            begin_state = self.begin_state(batch_size=inputs.shape[1],
-                                           ctx=inputs.context)
-        encoded, state = self.encoder(encoded, begin_state)
+        encoded, states = self.cell.unroll(length=self._length, inputs=encoded,
+                                           begin_state=begin_state,
+                                           merge_outputs=True, layout='TNC')
         if self._dropout:
-            encoded = mx.nd.Dropout(encoded, p=self._dropout, axes=(0, ))
+            encoded = F.Dropout(encoded, p=self._dropout, axes=(0, ))
         out = self.decoder(encoded)
-        return out, state
+        return out, states
 
 
-class SubwordEmbeddings(gluon.Block):
-    def __init__(self, embedding_dim, **kwargs):
+class SubwordEmbeddings(gluon.HybridBlock):
+    def __init__(self, embedding_dim, length, **kwargs):
         super().__init__(**kwargs)
 
         self.embedding_dim = embedding_dim
+        self.length = length
 
         with self.name_scope():
-            self.subword = SubwordRNN(mode='lstm', embed_size=32,
-                                      hidden_size=64,
-                                      output_size=embedding_dim, num_layers=1)
+            self.subword = SubwordRNN(mode='lstm', length=length,
+                                      embed_size=32, hidden_size=64,
+                                      output_size=embedding_dim)
 
-    def forward(self, token_bytes, F=mx.nd):
-        subword_emb_weights = mx.nd.max(self.subword(token_bytes)[0], axis=1)
+    def hybrid_forward(self, F, token_bytes):
+        # TODO add valid length mask for F.max
+        out, states = self.subword(token_bytes)
+        subword_emb_weights = F.max(out, axis=0)
         return subword_emb_weights
 
 
@@ -339,7 +378,8 @@ def get_model(args, train_dataset):
     num_tokens = train_dataset.num_tokens
 
     embedding_in = gluon.nn.SparseEmbedding(num_tokens, args.emsize)
-    subword_net = SubwordEmbeddings(embedding_dim=args.emsize)
+    subword_net = SubwordEmbeddings(embedding_dim=args.emsize,
+                                    length=train_dataset.idx_to_bytes.shape[1])
     embedding_out = gluon.nn.SparseEmbedding(num_tokens, args.emsize)
 
     context = get_context(args)
@@ -358,7 +398,7 @@ def get_model(args, train_dataset):
 
     embedding_in.hybridize()
     embedding_out.hybridize()
-    subword_net.hybridize()
+    # subword_net.hybridize()
 
     return embedding_in, embedding_out, subword_net, loss
 
@@ -382,6 +422,10 @@ def evaluate_similarity(args, vocab, subword_vocab, embedding_in, subword_net,
     dataset_coded = [[
         vocab.token_to_idx[d[0]], vocab.token_to_idx[d[1]], d[2]
     ] for d in dataset]
+
+    if not dataset_coded:
+        return 0, 0
+
     words1, words2, scores = zip(*dataset_coded)
 
     context = get_context(args)

@@ -226,6 +226,9 @@ def _build_sg_batch(coded, idxs, window, negative, token_freq_cumsum,
             token_length[i] = np.argmax(token_bytes[i] == 0)
         token_bytes = token_bytes[:, :np.max(token_length)]
 
+    # Use TNC layout for sequences
+    token_bytes = token_bytes.T
+
     return sources, targets, labels, unique_token_idxs, token_bytes
 
 
