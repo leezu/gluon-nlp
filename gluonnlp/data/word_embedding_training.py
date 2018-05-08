@@ -141,8 +141,8 @@ class _WordEmbeddingDataset(Dataset):
 
     """
 
-    def __init__(self, coded, idx_to_counts, idx_to_bytes, window=5,
-                 negative=5, power=0.75):
+    def __init__(self, coded, idx_to_counts, idx_to_bytes,
+                 fixed_size_subwords=True, window=5, negative=5, power=0.75):
         assert isinstance(idx_to_bytes, np.ndarray)
 
         self.idx_to_counts = idx_to_counts
@@ -150,6 +150,7 @@ class _WordEmbeddingDataset(Dataset):
         self.window = window
         self.negative = negative
         self.power = power
+        self.fixed_size_subwords = fixed_size_subwords
 
         # Flatten the datastructures
         self._sentence_boundaries = np.cumsum([len(s) for s in coded])
@@ -182,7 +183,7 @@ class SkipGramWordEmbeddingDataset(_WordEmbeddingDataset):
          unique_token_idxs, token_bytes) = _build_sg_batch(
              self.coded, idx, self.window, self.negative,
              self._smoothed_token_freq_cumsum, self._sentence_boundaries,
-             self.idx_to_bytes)
+             self.idx_to_bytes, self.fixed_size_subwords)
         source_subword = npi.remap(
             source.flatten(), unique_token_idxs,
             np.arange(unique_token_idxs.shape[0])).reshape(source.shape)
@@ -195,7 +196,7 @@ class SkipGramWordEmbeddingDataset(_WordEmbeddingDataset):
 
 @numba.njit(nogil=True)
 def _build_sg_batch(coded, idxs, window, negative, token_freq_cumsum,
-                    sentence_boundaries, idx_to_bytes):
+                    sentence_boundaries, idx_to_bytes, fixed_size_subwords):
     batch_size = len(idxs)
 
     sources = np.zeros((batch_size, 1), np.float32)
@@ -219,10 +220,11 @@ def _build_sg_batch(coded, idxs, window, negative, token_freq_cumsum,
     token_bytes = idx_to_bytes[unique_token_idxs.astype(np.int32)]
 
     # Throw away unneeded padding zeros
-    token_length = np.zeros((token_bytes.shape[0], ))
-    for i in numba.prange(token_bytes.shape[0]):
-        token_length[i] = np.argmax(token_bytes[i] == 0)
-    token_bytes = token_bytes[:, :np.max(token_length)]
+    if not fixed_size_subwords:
+        token_length = np.zeros((token_bytes.shape[0], ))
+        for i in numba.prange(token_bytes.shape[0]):
+            token_length[i] = np.argmax(token_bytes[i] == 0)
+        token_bytes = token_bytes[:, :np.max(token_length)]
 
     return sources, targets, labels, unique_token_idxs, token_bytes
 

@@ -25,6 +25,7 @@ from __future__ import print_function
 __all__ = ['Vocab', 'SubwordVocab']
 
 import json
+import logging
 import warnings
 
 from mxnet import nd
@@ -477,6 +478,10 @@ class SubwordVocab(object):
         self.idx_to_bytes = np.stack(
             np.pad(b, (0, max_bytes_len - len(b)), mode='constant')
             for b in idx_to_bytes)
+
+        logging.info(
+            'Constructing subword vocabulary based on byte sequences. '
+            'Longest byte sequence has length {}'.format(max_bytes_len))
 
     def to_subwords(self, indices=None, unknown=None):
         if isinstance(indices, nd.NDArray):
