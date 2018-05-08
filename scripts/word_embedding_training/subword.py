@@ -81,6 +81,11 @@ def list_subwordnetworks():
 # Model definitions
 ###############################################################################
 class SubwordNetwork(gluon.Block):
+    """Models for sub-word embedding inference.
+
+    Expects subword sequences in TNC layout.
+
+    """
     pass
 
 
@@ -197,4 +202,96 @@ class SubwordRNN(SubwordNetwork, gluon.HybridBlock):
         if self._dropout:
             encoded = F.Dropout(encoded, p=self._dropout, axes=(0, ))
         out = self.decoder(encoded)
-        return out, states
+        out = F.max(out, axis=0)
+        return out
+
+
+@register
+class SubwordCNN(SubwordNetwork, gluon.HybridBlock):
+    """CNN model for sub-word embedding inference.
+
+    Parameters
+    ----------
+    embed_size : int
+        Dimension of embedding vectors for subword units.
+    output_size : int
+        Dimension of embedding vectors for word units.
+    vocab_size : int, default 2**8
+        Size of the input vocabulary. Usually the input vocabulary is the
+        number of distinct bytes.
+    """
+
+    def __init__(self, embed_size, output_size, vocab_size=256, **kwargs):
+        super(SubwordCNN, self).__init__(**kwargs)
+        self._embed_size = embed_size
+        self._output_size = output_size
+        self._vocab_size = vocab_size
+
+        self.num_feature_maps = 32
+        self.filter_sizes = [5]
+        self.dropout_embedding = 0.3
+        self.dropout_cnn = 0.3
+
+        with self.name_scope():
+            self.embedding = self._get_embedding()
+            self.encoder = self._get_encoder()
+            self.decoder = self._get_decoder()
+
+    def _get_embedding(self):
+        embedding = gluon.nn.HybridSequential()
+        with embedding.name_scope():
+            embedding.add(
+                gluon.nn.Embedding(self._vocab_size, self._embed_size,
+                                   weight_initializer=mx.init.Uniform(0.1)))
+
+            # Change TNC to NCT layout (for CNN)
+            embedding.add(
+                gluon.nn.HybridLambda(
+                    lambda F, x: x.swapaxes(1, 2).transpose()))
+
+            if self.dropout_embedding:
+                embedding.add(gluon.nn.Dropout(self.dropout_embedding))
+        return embedding
+
+    def _get_encoder(self):
+        encoder = gluon.nn.HybridSequential()
+        with encoder.name_scope():
+            # Concurrent Convolutions with different kernel sizes
+            rec = gluon.contrib.nn.HybridConcurrent()
+            with rec.name_scope():
+                for size in self.filter_sizes:
+                    seq = gluon.nn.HybridSequential()
+                    with seq.name_scope():
+                        seq.add(
+                            mx.gluon.nn.Conv1D(channels=self.num_feature_maps,
+                                               kernel_size=size, strides=1,
+                                               use_bias=True, layout='NCW',
+                                               activation='relu'))
+                        seq.add(
+                            gluon.nn.HybridLambda(
+                                lambda F, x: F.max(x, axis=2)))
+                        seq.add(gluon.nn.HybridLambda(
+                            lambda F, x: F.reshape(x,
+                                shape=[-1, self.num_feature_maps])))
+                    rec.add(seq)
+            encoder.add(rec)
+
+            # Dropout
+            if self.dropout_cnn:
+                encoder.add(mx.gluon.nn.Dropout(self.dropout_cnn))
+
+        return encoder
+
+    def _get_decoder(self):
+        output = gluon.nn.HybridSequential()
+        with output.name_scope():
+            output.add(gluon.nn.Dense(self._output_size, flatten=False))
+        return output
+
+    def hybrid_forward(self, F, inputs, begin_state=None):  # pylint: disable=arguments-differ
+        """Defines the forward computation. Arguments can be either
+        :py:class:`NDArray` or :py:class:`Symbol`."""
+        encoded = self.embedding(inputs)
+        encoded = self.encoder(encoded)
+        out = self.decoder(encoded)
+        return out

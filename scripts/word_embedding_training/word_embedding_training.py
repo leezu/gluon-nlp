@@ -68,6 +68,10 @@ def get_args():
 
     # Model arguments
     group = parser.add_argument_group('Model arguments')
+    group.add_argument(
+        '--subword-network', type=str, default='SubwordCNN',
+        help=('Network architecture to infer subword level embeddings. ' +
+              str(subword.list_subwordnetworks())))
     group.add_argument('--emsize', type=int, default=300,
                        help='Size of word embeddings')
     group.add_argument(
@@ -148,22 +152,25 @@ def get_context(args):
 
 
 class SubwordEmbeddings(gluon.HybridBlock):
-    def __init__(self, embedding_dim, length, **kwargs):
+    def __init__(self, embedding_dim, length, subword_network, **kwargs):
         super().__init__(**kwargs)
 
         self.embedding_dim = embedding_dim
         self.length = length
 
         with self.name_scope():
-            self.subword = subword.create(
-                name='SubwordRNN', mode='lstm', length=length, embed_size=32,
-                hidden_size=64, output_size=embedding_dim)
+            if 'rnn' in subword_network.lower():
+                self.subword = subword.create(
+                    name=subword_network, mode='lstm', length=length,
+                    embed_size=32, hidden_size=64, output_size=embedding_dim)
+            else:
+                self.subword = subword.create(name=subword_network,
+                                              embed_size=32,
+                                              output_size=embedding_dim)
 
     def hybrid_forward(self, F, token_bytes):
-        # TODO add valid length mask for F.max
-        out, states = self.subword(token_bytes)
-        subword_emb_weights = F.max(out, axis=0)
-        return subword_emb_weights
+        # TODO add valid length mask for the subword time pool
+        return self.subword(token_bytes)
 
 
 ###############################################################################
@@ -262,7 +269,8 @@ def get_model(args, train_dataset):
 
     embedding_in = gluon.nn.SparseEmbedding(num_tokens, args.emsize)
     subword_net = SubwordEmbeddings(embedding_dim=args.emsize,
-                                    length=train_dataset.idx_to_bytes.shape[1])
+                                    length=train_dataset.idx_to_bytes.shape[1],
+                                    subword_network=args.subword_network)
     embedding_out = gluon.nn.SparseEmbedding(num_tokens, args.emsize)
 
     context = get_context(args)
@@ -418,8 +426,8 @@ def train(args):
                 source_subword, [context[0]])[0]
 
             # Split and load subword info to all GPUs for accelerated computation
-            token_bytes = gluon.utils.split_and_load(token_bytes, context,
-                                                     even_split=False)
+            token_bytes = gluon.utils.split_and_load(
+                token_bytes, context, batch_axis=1, even_split=False)
 
             with mx.autograd.record():
                 # Compute subword embeddings from subword info (byte sequences)
