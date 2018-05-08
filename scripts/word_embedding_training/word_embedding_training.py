@@ -276,7 +276,7 @@ def get_train_data(args):
             itertools.chain.from_iterable(sentences))
 
     vocab = nlp.Vocab(counter, unknown_token=None, padding_token=None,
-                      bos_token=None, eos_token=None)
+                      bos_token=None, eos_token=None, min_freq=5)
 
     # Split dataset into parts for fast multiprocessing (and serialize with
     # json to avoid slow pickle operation)
