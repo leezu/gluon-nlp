@@ -78,6 +78,8 @@ def get_args():
     group.add_argument('--eval-interval', type=int, default=100,
                        help='evaluation interval')
     ## Datasets
+    group.add_argument('--train-dataset', type=str, default='Text8',
+                       help='Training corpus. [\'Text8\', \'Test\']')
     group.add_argument(
         '--similarity-datasets', type=str,
         default=nlp.data.word_embedding_evaluation.word_similarity_datasets,
@@ -269,6 +271,14 @@ def get_train_data(args):
     # → Add Text8 Dataset to the toolkit
     with print_time('read dataset to memory'):
         sentences = nlp.data.Text8(segment='train')
+
+    # TODO Test code
+    if args.train_dataset == 'Test':
+        sentences = [sentences[0][:1000]]
+    elif args.train_dataset == 'Text8':
+        pass
+    else:
+        raise RuntimeError('Unknown dataset.')
 
     # Count tokens
     with print_time('count all tokens'):
