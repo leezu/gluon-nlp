@@ -21,23 +21,9 @@
 
 """
 
-import argparse
-import functools
-import itertools
-import logging
-import math
-import multiprocessing as mp
-import sys
-import time
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
 
-import attr
 import mxnet as mx
-import numpy as np
-import tqdm
 from mxnet import gluon
-from scipy import stats
 
 import gluonnlp as nlp
 
@@ -86,7 +72,6 @@ class SubwordNetwork(gluon.Block):
     Expects subword sequences in TNC layout.
 
     """
-    pass
 
 
 @register

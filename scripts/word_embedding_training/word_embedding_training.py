@@ -32,7 +32,6 @@ import multiprocessing as mp
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
 
 import attr
 import mxnet as mx
@@ -45,12 +44,7 @@ import gluonnlp as nlp
 import sparse_ops
 import subword
 
-try:
-    import ujson as json
-except ImportError:
-    logging.warning('ujson not installed. '
-                    ' Install via `pip install ujson` '
-                    'for faster data preprocessing.')
+import data
 
 try:
     import tqdm
@@ -173,94 +167,6 @@ class SubwordEmbeddings(gluon.HybridBlock):
     def hybrid_forward(self, F, token_bytes):
         # TODO add valid length mask for the subword time pool
         return self.subword(token_bytes)
-
-
-###############################################################################
-# Load data
-###############################################################################
-@contextmanager
-def print_time(task):
-    start_time = time.time()
-    logging.info('Starting to {}'.format(task))
-    yield
-    logging.info('Finished to {} in {} seconds'.format(
-        task,
-        time.time() - start_time))
-
-
-def token_to_index(serialized_sentences, vocab):
-    sentences = json.loads(serialized_sentences)
-    coded = [
-        np.array([vocab[token] for token in s
-                  if token in vocab], dtype=np.int32) for s in sentences
-    ]
-    return coded
-
-
-def get_train_data(args):
-    # TODO currently only supports skipgram and a single dataset
-    # → Add Text8 Dataset to the toolkit
-    with print_time('read dataset to memory'):
-        sentences = nlp.data.Text8(segment='train')
-
-    # TODO Test code
-    if args.train_dataset == 'Test':
-        sentences = [sentences[0][:1000]]
-    elif args.train_dataset == 'Text8':
-        pass
-    else:
-        raise RuntimeError('Unknown dataset.')
-
-    # Count tokens
-    with print_time('count all tokens'):
-        counter = nlp.data.count_tokens(
-            itertools.chain.from_iterable(sentences))
-
-    vocab = nlp.Vocab(counter, unknown_token=None, padding_token=None,
-                      bos_token=None, eos_token=None, min_freq=5)
-
-    # Split dataset into parts for fast multiprocessing (and serialize with
-    # json to avoid slow pickle operation)
-    num_workers = mp.cpu_count()
-    if len(sentences) == 1:
-        size = math.ceil(len(sentences[0]) / num_workers)
-        worker_sentences = [[sentences[0][i:i + size]]
-                            for i in range(0, len(sentences[0]), size)]
-    else:
-        size = math.ceil(len(sentences) / num_workers)
-        worker_sentences = [[sentences[i:i + size]]
-                            for i in range(0, len(sentences), size)]
-
-    worker_sentences = [json.dumps(s) for s in worker_sentences]
-    with mp.Pool(processes=num_workers) as pool:
-        with print_time('code all sentences'):
-            coded = pool.map(
-                functools.partial(token_to_index, vocab=vocab),
-                worker_sentences)
-            coded = sum(coded, [])
-            if len(sentences) == 1:
-                coded = [np.concatenate(coded)]
-
-    # Prune frequent words from sentences
-    with print_time('prune frequent words from sentences'):
-        frequent_tokens_subsampling_constant = 1e-3
-        idx_to_counts = np.array(vocab.idx_to_counts, dtype=int)
-        f = idx_to_counts / np.sum(idx_to_counts)
-        idx_to_pdiscard = (np.sqrt(frequent_tokens_subsampling_constant / f) +
-                           frequent_tokens_subsampling_constant / f)
-
-        # prune_sentences releases GIL so multi-threading is sufficient
-        prune_sentences = functools.partial(
-            nlp.data.word_embedding_training.prune_sentences,
-            idx_to_pdiscard=idx_to_pdiscard)
-        with ThreadPoolExecutor(max_workers=num_workers) as e:
-            coded = list(e.map(prune_sentences, coded))
-
-    # Get index to byte mapping from vocab
-    subword_vocab = nlp.SubwordVocab(vocab.idx_to_token)
-    sgdataset = nlp.data.SkipGramWordEmbeddingDataset(
-        coded, idx_to_counts, subword_vocab.idx_to_bytes)
-    return sgdataset, vocab, subword_vocab
 
 
 ###############################################################################
@@ -399,7 +305,7 @@ def evaluate(args, embedding_in, subword_net, vocab, subword_vocab):
 # Training code
 ###############################################################################
 def train(args):
-    train_dataset, vocab, subword_vocab = get_train_data(args)
+    train_dataset, vocab, subword_vocab = data.get_train_data(args)
     embedding_in, embedding_out, subword_net, loss_function = get_model(
         args, train_dataset)
     context = get_context(args)
