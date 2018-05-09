@@ -99,6 +99,8 @@ def get_args():
     group = parser.add_argument_group('Computation arguments')
     group.add_argument('--batch-size', type=int, default=1024,
                        help='Batch size for training.')
+    group.add_argument('--sparsity-lambda', type=float, default=0.01,
+                       help='Initial learning rate')
     group.add_argument('--lr', type=float, default=0.1,
                        help='Initial learning rate')
     group.add_argument('--epochs', type=int, default=5, help='Epoch limit')
@@ -356,6 +358,15 @@ def evaluate_similarity(args, vocab, subword_vocab, embedding_in, subword_net,
     return sr.correlation, len(dataset)
 
 
+def evaluate_num_zero_rows(args, embedding_in, eps=1E-5):
+    context = get_context(args)
+    token_idx_to_vec = embedding_in.weight.data(ctx=context[0]).as_in_context(
+        mx.cpu()).data
+    embedding_norm = mx.nd.norm(token_idx_to_vec, axis=1)
+    num_zero_rows = mx.nd.sum(embedding_norm < eps).asscalar()
+    return num_zero_rows
+
+
 def evaluate(args, embedding_in, subword_net, vocab, subword_vocab):
     sr_correlation = 0
     for dataset_name in args.similarity_datasets:
@@ -378,7 +389,10 @@ def evaluate(args, embedding_in, subword_net, vocab, subword_vocab):
                     dataset, similarity_function)
                 sr_correlation += result
     sr_correlation /= len(args.similarity_datasets)
-    return {'SpearmanR': sr_correlation}
+
+    num_zero_rows = evaluate_num_zero_rows(args, embedding_in)
+
+    return {'SpearmanR': sr_correlation, 'NumZeroRows': num_zero_rows}
 
 
 ###############################################################################
@@ -400,7 +414,8 @@ def train(args):
     })
 
     # Auxilary states for group lasso objective
-    last_update_buffer = mx.nd.zeros((train_dataset.num_tokens, ), ctx=context[0])
+    last_update_buffer = mx.nd.zeros((train_dataset.num_tokens, ),
+                                     ctx=context[0])
     current_update = 1
 
     indices = np.arange(len(train_dataset))
@@ -488,8 +503,8 @@ def train(args):
                     mx.nd.sparse.sgd_update(
                         weight=device_param, grad=device_grad,
                         last_update_buffer=last_update_buffer, lr=args.lr,
-                        sparsity=0.1, current_update=current_update,
-                        out=device_param)
+                        sparsity=args.sparsity_lambda,
+                        current_update=current_update, out=device_param)
                     current_update += 1
 
             if i % args.eval_interval == 0:
@@ -510,6 +525,17 @@ def train(args):
                                 axis=1).mean().asscalar(),
                     **eval_dict)
 
+        # Force eager gradient update at end of every epoch
+        for device_param, device_grad in zip(param.list_data(),
+                                             param.list_grad()):
+            mx.nd.sparse.sgd_update(
+                weight=device_param, grad=mx.nd.sparse.row_sparse_array(
+                    device_grad.shape,
+                    ctx=context[0]), last_update_buffer=last_update_buffer,
+                lr=args.lr, sparsity=args.sparsity_lambda,
+                current_update=current_update, out=device_param)
+
+        # Shut down ThreadPoolExecutor
         executor.shutdown()
 
 
