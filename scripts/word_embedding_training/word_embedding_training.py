@@ -394,8 +394,14 @@ def train(args):
         embedding_out.collect_params().values())
     dense_params = list(subword_net.collect_params().values())
 
-    dense_trainer = gluon.Trainer(dense_params, 'sgd',
-                                  {'learning_rate': args.lr})
+    dense_trainer = gluon.Trainer(dense_params, 'sgd', {
+        'learning_rate': args.lr,
+        'momentum': 0.1
+    })
+
+    # Auxilary states for group lasso objective
+    last_update_buffer = mx.nd.zeros((train_dataset.num_tokens, ), ctx=context[0])
+    current_update = 1
 
     indices = np.arange(len(train_dataset))
     for epoch in range(args.epochs):
@@ -479,9 +485,12 @@ def train(args):
                         device_grad = mx.nd.Custom(
                             device_grad, op_type='sparse_l2normalization')
 
-                    mx.nd.sparse.sgd_update(weight=device_param,
-                                            grad=device_grad, lr=args.lr,
-                                            out=device_param)
+                    mx.nd.sparse.sgd_update(
+                        weight=device_param, grad=device_grad,
+                        last_update_buffer=last_update_buffer, lr=args.lr,
+                        sparsity=0.1, current_update=current_update,
+                        out=device_param)
+                    current_update += 1
 
             if i % args.eval_interval == 0:
                 eval_dict = evaluate(args, embedding_in, subword_net, vocab,
