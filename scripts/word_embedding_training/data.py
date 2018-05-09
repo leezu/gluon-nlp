@@ -48,7 +48,7 @@ def token_to_index(serialized_sentences, vocab):
     return coded
 
 
-def get_train_data(args):
+def _get_sentence_corpus(args):
     # TODO currently only supports skipgram and a single dataset
     # → Add Text8 Dataset to the toolkit
     with utils.print_time('read dataset to memory'):
@@ -62,6 +62,10 @@ def get_train_data(args):
     else:
         raise RuntimeError('Unknown dataset.')
 
+    return sentences
+
+
+def _preprocess_sentences(sentences):
     # Count tokens
     with utils.print_time('count all tokens'):
         counter = nlp.data.count_tokens(
@@ -107,8 +111,22 @@ def get_train_data(args):
         with ThreadPoolExecutor(max_workers=num_workers) as e:
             coded = list(e.map(prune_sentences, coded))
 
+    return vocab, coded
+
+
+def _get_train_dataset(args, vocab, coded):
+    idx_to_counts = np.array(vocab.idx_to_counts, dtype=int)
     # Get index to byte mapping from vocab
     subword_vocab = nlp.SubwordVocab(vocab.idx_to_token)
+
+    # TODO construct depending on args
     sgdataset = nlp.data.SkipGramWordEmbeddingDataset(
         coded, idx_to_counts, subword_vocab.idx_to_bytes)
     return sgdataset, vocab, subword_vocab
+
+
+def get_train_data(args):
+    sentences = _get_sentence_corpus(args)
+    vocab, coded = _preprocess_sentences(sentences)
+    data = _get_train_dataset(args, vocab, coded)
+    return data

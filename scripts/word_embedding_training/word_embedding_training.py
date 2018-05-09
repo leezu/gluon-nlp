@@ -24,27 +24,23 @@ This example shows how to train word embeddings.
 """
 
 import argparse
-import functools
-import itertools
 import logging
 import math
 import multiprocessing as mp
 import sys
-import time
 from concurrent.futures import ThreadPoolExecutor
 
-import attr
 import mxnet as mx
 import numpy as np
-import tqdm
 from mxnet import gluon
-from scipy import stats
 
 import gluonnlp as nlp
-import sparse_ops
 import subword
 
 import data
+import evaluation
+import sparse_ops
+import utils
 
 try:
     import tqdm
@@ -127,7 +123,7 @@ def validate_args(args):
     """Validate provided arguments and act on --help."""
     # Check correctness of similarity dataset names
 
-    context = get_context(args)
+    context = utils.get_context(args)
     assert args.batch_size % len(context) == 0, \
         "Total batch size must be multiple of the number of devices"
 
@@ -137,14 +133,6 @@ def validate_args(args):
                 nlp.data.word_embedding_evaluation.word_similarity_datasets):
             print('{} is not a supported dataset.'.format(dataset_name))
             sys.exit(1)
-
-
-def get_context(args):
-    if args.gpu is None or args.gpu == '':
-        context = [mx.cpu()]
-    else:
-        context = [mx.gpu(int(i)) for i in args.gpu]
-    return context
 
 
 class SubwordEmbeddings(gluon.HybridBlock):
@@ -181,7 +169,7 @@ def get_model(args, train_dataset):
                                     subword_network=args.subword_network)
     embedding_out = gluon.nn.SparseEmbedding(num_tokens, args.emsize)
 
-    context = get_context(args)
+    context = utils.get_context(args)
     embeddings_context = [context[0]]
     if args.normalized_initialization:
         embedding_in.initialize(
@@ -203,112 +191,13 @@ def get_model(args, train_dataset):
 
 
 ###############################################################################
-# Evaluation code
-###############################################################################
-def evaluate_similarity(args, vocab, subword_vocab, embedding_in, subword_net,
-                        dataset, similarity_function='CosineSimilarity'):
-    """Evaluation on similarity task."""
-    initial_length = len(dataset)
-    dataset = [
-        d for d in dataset
-        if d[0] in vocab.token_to_idx and d[1] in vocab.token_to_idx
-    ]
-    num_dropped = initial_length - len(dataset)
-    if num_dropped:
-        logging.debug('Dropped %s pairs from %s as the were OOV.', num_dropped,
-                      dataset.__class__.__name__)
-
-    dataset_coded = [[
-        vocab.token_to_idx[d[0]], vocab.token_to_idx[d[1]], d[2]
-    ] for d in dataset]
-
-    if not dataset_coded:
-        return 0, 0
-
-    words1, words2, scores = zip(*dataset_coded)
-
-    context = get_context(args)
-
-    # Prepare remapping of indices for use with subwords
-    token_bytes, unique_indices = subword_vocab.to_subwords(
-        indices=words1 + words2)
-    words1 = subword_vocab.remap_indices(unique_indices, words1)
-    words2 = subword_vocab.remap_indices(unique_indices, words2)
-
-    # Get vectors from Subword Network
-    token_bytes = mx.nd.array(token_bytes, ctx=context[0])
-    subword_idx_to_vec = subword_net(token_bytes)
-
-    # Get vectors from TokenEmbedding
-    token_idx_to_vec = embedding_in.weight.data(ctx=context[0]).retain(
-        mx.nd.array(unique_indices, ctx=context[0])).data
-
-    # Combine vectors
-    idx_to_vec = subword_idx_to_vec + token_idx_to_vec
-
-    # Evaluate
-    evaluator = nlp.embedding.evaluation.WordEmbeddingSimilarity(
-        idx_to_vec=idx_to_vec, similarity_function=similarity_function)
-    context = get_context(args)
-    evaluator.initialize(ctx=context[0])
-    if not args.dont_hybridize:
-        evaluator.hybridize()
-
-    pred_similarity = evaluator(
-        mx.nd.array(words1, ctx=context[0]), mx.nd.array(
-            words2, ctx=context[0]))
-
-    sr = stats.spearmanr(pred_similarity.asnumpy(), np.array(scores))
-    logging.debug('Spearman rank correlation on %s: %s',
-                  dataset.__class__.__name__, sr.correlation)
-    return sr.correlation, len(dataset)
-
-
-def evaluate_num_zero_rows(args, embedding_in, eps=1E-5):
-    context = get_context(args)
-    token_idx_to_vec = embedding_in.weight.data(ctx=context[0]).as_in_context(
-        mx.cpu()).data
-    embedding_norm = mx.nd.norm(token_idx_to_vec, axis=1)
-    num_zero_rows = mx.nd.sum(embedding_norm < eps).asscalar()
-    return num_zero_rows
-
-
-def evaluate(args, embedding_in, subword_net, vocab, subword_vocab):
-    sr_correlation = 0
-    for dataset_name in args.similarity_datasets:
-        if stats is None:
-            raise RuntimeError(
-                'Similarity evaluation requires scipy.'
-                'You may install scipy via `pip install scipy`.')
-
-        logging.debug('Starting evaluation of %s', dataset_name)
-        parameters = nlp.data.list_datasets(dataset_name)
-        for key_values in itertools.product(*parameters.values()):
-            kwargs = dict(zip(parameters.keys(), key_values))
-            logging.debug('Evaluating with %s', kwargs)
-
-            dataset = nlp.data.create(dataset_name, **kwargs)
-            for similarity_function in args.similarity_functions:
-                logging.debug('Evaluating with  %s', similarity_function)
-                result, num_samples = evaluate_similarity(
-                    args, vocab, subword_vocab, embedding_in, subword_net,
-                    dataset, similarity_function)
-                sr_correlation += result
-    sr_correlation /= len(args.similarity_datasets)
-
-    num_zero_rows = evaluate_num_zero_rows(args, embedding_in)
-
-    return {'SpearmanR': sr_correlation, 'NumZeroRows': num_zero_rows}
-
-
-###############################################################################
 # Training code
 ###############################################################################
 def train(args):
     train_dataset, vocab, subword_vocab = data.get_train_data(args)
     embedding_in, embedding_out, subword_net, loss_function = get_model(
         args, train_dataset)
-    context = get_context(args)
+    context = utils.get_context(args)
 
     sparse_params = list(embedding_in.collect_params().values()) + list(
         embedding_out.collect_params().values())
@@ -414,8 +303,8 @@ def train(args):
                     current_update += 1
 
             if i % args.eval_interval == 0:
-                eval_dict = evaluate(args, embedding_in, subword_net, vocab,
-                                     subword_vocab)
+                eval_dict = evaluation.evaluate(
+                    args, embedding_in, subword_net, vocab, subword_vocab)
 
                 t.set_postfix(
                     # TODO print number of grad norm > 0
