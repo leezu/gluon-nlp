@@ -241,6 +241,7 @@ def train(args):
             # Load indices for looking up subword embedding to context[0]
             source_subword = gluon.utils.split_and_load(
                 source_subword, [context[0]])[0]
+            # TODO(leezu): take a mask and pass it to the subword network
 
             # Split and load subword info to all GPUs for accelerated computation
             token_bytes = gluon.utils.split_and_load(

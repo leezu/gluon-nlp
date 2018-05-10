@@ -148,13 +148,14 @@ class _WordEmbeddingDataset(Dataset):
                  fixed_size_subwords=False, window=5, negative=5, power=0.75):
         idx_to_subwordidxs = subword_vocab.indices_to_subwordindices(
             list(range(len(idx_to_counts))))
-        if not isinstance(idx_to_subwordidxs, np.ndarray):
-            # Convert variable length subword indices per token to a padded
-            # numpy array
-            max_subwordidxs_len = max(len(s) for s in idx_to_subwordidxs)
-            idx_to_subwordidxs = np.stack(
-                np.pad(b, (0, max_subwordidxs_len - len(b)), mode='constant')
-                for b in idx_to_subwordidxs)
+
+        # Convert variable length subword indices per token to a padded
+        # numpy array. Pad with -1.
+        max_subwordidxs_len = max(len(s) for s in idx_to_subwordidxs)
+        idx_to_subwordidxs = np.stack(
+            np.pad(b, (0, max_subwordidxs_len - len(b)
+                       ), constant_values=-1, mode='constant')
+            for b in idx_to_subwordidxs)
 
         self.idx_to_counts = idx_to_counts
         self.idx_to_subwordidxs = idx_to_subwordidxs
@@ -235,6 +236,8 @@ def _build_sg_batch(coded, idxs, window, negative, token_freq_cumsum,
     token_bytes = idx_to_subwordidxs[unique_token_idxs.astype(np.int32)]
 
     # Throw away unneeded padding zeros
+    # TODO(leezu): 0 is also a valid subword idx → replace with -1 here and
+    # later with 0 once the mask is constructed. See fasttext version
     if not fixed_size_subwords:
         token_length = np.zeros((token_bytes.shape[0], ))
         for i in numba.prange(token_bytes.shape[0]):
@@ -296,14 +299,14 @@ class SkipGramFasttextWordEmbeddingDataset(_WordEmbeddingDataset):
     def __getitem__(self, idx):
         # Make sure idx is of shape (batch_size,)
         idx = np.array(idx).flatten()
-        (source, target, label) = _build_sg_fasttext_batch(
+        (source, target, label, subword_mask) = _build_sg_fasttext_batch(
             self.coded, idx, self.window, self.negative,
             self._smoothed_token_freq_cumsum, self._sentence_boundaries,
             self.idx_to_subwordidxs, self.fixed_size_subwords)
         if len(idx) == 1:
-            return source[0], target[0], label[0]
+            return source[0], target[0], label[0], subword_mask[0]
         else:
-            return source, target, label
+            return source, target, label, subword_mask
 
 
 @numba.njit(nogil=True)
@@ -335,14 +338,19 @@ def _build_sg_fasttext_batch(coded, idxs, window, negative, token_freq_cumsum,
         targets[i] = target
         labels[i] = label
 
+    # Prepare mask
+    token_length = np.zeros((sources.shape[0] * num_sources, ))
+    mask = np.zeros_like(sources)
+    for i in numba.prange(sources.shape[0]):
+        for j in range(num_sources):
+            length = np.argmax(sources[i][j] == -1)
+            token_length[i * num_sources + j] = length
+            sources[i, j, length:] = 0
+            mask[i, j, :length] = 1
+
     # Throw away unneeded padding zeros
     if not fixed_size_subwords:
-        # In 'sources'
-        token_length = np.zeros((sources.shape[0] * num_sources, ))
-        for i in numba.prange(sources.shape[0]):
-            for j in range(num_sources):
-                length = np.argmax(sources[i][j] == 0)
-                token_length[i * num_sources + j] = length
         sources = sources[:, :, :np.max(token_length)]
+        mask = mask[:, :, :np.max(token_length)]
 
-    return sources, targets, labels
+    return sources, targets, labels, mask

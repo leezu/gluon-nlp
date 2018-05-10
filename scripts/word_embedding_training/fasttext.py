@@ -104,19 +104,19 @@ def train(args):
 
         num_workers = math.ceil(mp.cpu_count() * 0.8)
         executor = ThreadPoolExecutor(max_workers=num_workers)
-        for i, (source, target, label) in zip(t,
-                                              executor.map(
-                                                  train_dataset.__getitem__,
-                                                  batches)):
-            # Load data for training embedding matrix to context[0]
-            source = gluon.utils.split_and_load(source, [context[0]])[0]
-            target = gluon.utils.split_and_load(target, [context[0]])[0]
-            label = gluon.utils.split_and_load(label, [context[0]])[0]
+        for i, (source, target, label, subword_mask) in zip(
+                t, executor.map(train_dataset.__getitem__, batches)):
+            source = mx.nd.array(source, ctx=context[0])
+            target = mx.nd.array(target, ctx=context[0])
+            label = mx.nd.array(label, ctx=context[0])
+            subword_mask = mx.nd.array(subword_mask, ctx=context[0])
 
             with mx.autograd.record():
                 # Look up subword embeddings and sum reduce
                 subword_embeddings = embedding_in(source)
-                emb_in = mx.nd.sum(subword_embeddings, axis=-2)
+                subword_embeddings_masked = subword_embeddings * \
+                    subword_mask.expand_dims(axis=-1)
+                emb_in = mx.nd.sum(subword_embeddings_masked, axis=-2)
                 emb_out = embedding_out(target)
                 pred = mx.nd.batch_dot(emb_in, emb_out.swapaxes(1, 2))
                 loss = loss_function(pred, label)
