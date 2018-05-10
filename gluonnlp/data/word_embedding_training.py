@@ -144,8 +144,10 @@ class _WordEmbeddingDataset(Dataset):
 
     """
 
-    def __init__(self, coded, idx_to_counts, idx_to_subwordidxs=None,
+    def __init__(self, coded, idx_to_counts, subword_vocab=None,
                  fixed_size_subwords=False, window=5, negative=5, power=0.75):
+        idx_to_subwordidxs = subword_vocab.indices_to_subwordindices(
+            list(range(len(idx_to_counts))))
         if not isinstance(idx_to_subwordidxs, np.ndarray):
             # Convert variable length subword indices per token to a padded
             # numpy array

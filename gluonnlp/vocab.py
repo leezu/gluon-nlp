@@ -627,7 +627,7 @@ class NGramSubwords(_SubwordFunction):
             for i, (w, _) in subwords_enumeration
         }
         # Requires Py3.6+
-        self.subwordidx_to_subword = list(self.subword_to_idx.keys())
+        self.subwordidx_to_subword = list(self.subword_to_subwordidx.keys())
 
     @staticmethod
     def _get_all_ngram_generator(words, ngrams):

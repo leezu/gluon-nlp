@@ -47,7 +47,7 @@ except ImportError:
 ###############################################################################
 def get_model(args, train_dataset, subword_vocab):
     num_tokens = train_dataset.num_tokens
-    num_tokens_and_subwords = num_tokens + len(subword_vocab.subword_to_idx)
+    num_tokens_and_subwords = num_tokens + len(subword_vocab)
 
     embedding_in = gluon.nn.SparseEmbedding(num_tokens_and_subwords,
                                             args.emsize)
@@ -86,8 +86,7 @@ def train(args):
 
     # Auxilary states for group lasso objective
     last_update_buffer = mx.nd.zeros(
-        (train_dataset.num_tokens + len(subword_vocab.subword_to_idx), ),
-        ctx=context[0])
+        (train_dataset.num_tokens + len(subword_vocab), ), ctx=context[0])
     current_update = 1
 
     indices = np.arange(len(train_dataset))

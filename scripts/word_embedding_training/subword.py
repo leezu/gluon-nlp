@@ -21,7 +21,6 @@
 
 """
 
-
 import mxnet as mx
 from mxnet import gluon
 
@@ -69,7 +68,7 @@ def list_subwordnetworks():
 class SubwordNetwork(gluon.Block):
     """Models for sub-word embedding inference.
 
-    Expects subword sequences in TNC layout.
+    Expects subword sequences in NTC layout.
 
     """
 
@@ -133,6 +132,9 @@ class SubwordRNN(SubwordNetwork, gluon.HybridBlock):
                                    weight_initializer=mx.init.Uniform(0.1)))
             if self._dropout:
                 embedding.add(gluon.nn.Dropout(self._dropout))
+
+            # Change NTC to TNC layout (for CNN)
+            embedding.add(gluon.nn.HybridLambda(lambda F, x: x.swapaxes(0, 1)))
         return embedding
 
     @staticmethod  # TODO waiting for mxnet RNN HybdridBlock support
@@ -229,10 +231,8 @@ class SubwordCNN(SubwordNetwork, gluon.HybridBlock):
                 gluon.nn.Embedding(self._vocab_size, self._embed_size,
                                    weight_initializer=mx.init.Uniform(0.1)))
 
-            # Change TNC to NCT layout (for CNN)
-            embedding.add(
-                gluon.nn.HybridLambda(
-                    lambda F, x: x.swapaxes(1, 2).transpose()))
+            # Change NTC to NCT layout (for CNN)
+            embedding.add(gluon.nn.HybridLambda(lambda F, x: x.swapaxes(1, 2)))
 
             if self.dropout_embedding:
                 embedding.add(gluon.nn.Dropout(self.dropout_embedding))

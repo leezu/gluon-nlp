@@ -120,17 +120,22 @@ def _get_train_dataset(args, vocab, coded):
 
     if args.objective.lower() == 'skipgram':
         if args.subword_network.lower() != 'fasttext':
+            subword_function = nlp.vocab.create('ByteSubwords')
             subword_vocab = nlp.SubwordVocab(idx_to_token=vocab.idx_to_token,
-                                             mode='byte')
+                                             subword_function=subword_function,
+                                             merge_indices=False)
             dataset = nlp.data.SkipGramWordEmbeddingDataset(
-                coded, idx_to_counts, subword_vocab.idx_to_subwordidxs)
+                coded, idx_to_counts, subword_vocab)
         else:  # Optimized fasttext data iterator for fasttext
+            subword_function = nlp.vocab.create(
+                'NGramSubwords', vocabulary=vocab, ngrams=[3, 4, 5, 6],
+                max_num_subwords=1000000)
             subword_vocab = nlp.SubwordVocab(idx_to_token=vocab.idx_to_token,
-                                             mode=list(range(3, 7)),
+                                             subword_function=subword_function,
                                              merge_indices=True)
 
             dataset = nlp.data.SkipGramFasttextWordEmbeddingDataset(
-                coded, idx_to_counts, subword_vocab.idx_to_subwordidxs)
+                coded, idx_to_counts, subword_vocab)
     else:
         raise NotImplementedError('Objective {} not implemented.'.format(
             args.objective))

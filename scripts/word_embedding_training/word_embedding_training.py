@@ -202,8 +202,6 @@ def train(args):
         args, train_dataset)
     context = utils.get_context(args)
 
-    sparse_params = list(embedding_in.collect_params().values()) + list(
-        embedding_out.collect_params().values())
     dense_params = list(subword_net.collect_params().values())
 
     dense_trainer = gluon.Trainer(dense_params, 'sgd', {

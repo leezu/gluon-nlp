@@ -34,48 +34,110 @@ import gluonnlp as nlp
 import utils
 
 
-def evaluate_similarity(args, vocab, subword_vocab, embedding_in, subword_net,
-                        dataset, similarity_function='CosineSimilarity'):
-    """Evaluation on similarity task."""
+def construct_vocab_embedding_for_dataset(args, tokens, vocab, embedding_in,
+                                          subword_vocab=None,
+                                          subword_net=None):
+    '''Precompute the token embeddings for all the words in the vocabulary'''
+    assert len(tokens) == len(set(tokens)), 'tokens contains duplicates.'
+
+    known_tokens = []
+    context = utils.get_context(args)
+    token_subword_embeddings = []
+    if subword_vocab is not None:
+        words_subword_indices = subword_vocab.words_to_subwordindices(tokens)
+        for token, subword_indices in zip(tokens, words_subword_indices):
+            subword_indices_nd = mx.nd.array(subword_indices, ctx=context[0])
+
+            # If no subwords are associated with this token
+            if not sum(subword_indices_nd.shape):
+                # If token is also not in vocabulary
+                if token not in vocab:
+                    continue
+                else:
+                    known_tokens.append(token)
+                    token_subword_embeddings.append(
+                        mx.nd.zeros((embedding_in.weight.shape[1], ),
+                                    ctx=context[0]))
+                    continue
+
+            if subword_net is not None:
+                # Add batch dimension and infer token_subword_embedding
+                subword_indices_nd = mx.nd.expand_dims(subword_indices_nd, 0)
+                token_subword_embedding = subword_net(subword_indices_nd)
+                token_subword_embeddings.append(token_subword_embedding)
+            else:  # Subword indices should be applicable for embedding_in
+                subword_embeddings = embedding_in(subword_indices_nd)
+                token_subword_embedding = mx.nd.sum(subword_embeddings, axis=0)
+                token_subword_embeddings.append(token_subword_embedding)
+
+            known_tokens.append(token)
+    else:
+        assert subword_net is None, \
+            'If subword_net is supplied, ' \
+            'also a subword_vocab needs to be specified.'
+
+    # Get token embeddings from embedding_in
+    token_to_idx = {token: i for i, token in enumerate(known_tokens)}
+    token_embeddings = []
+    for token in known_tokens:
+        if token in vocab:
+            token_embedding = embedding_in(
+                mx.nd.array([vocab.to_indices(token)], ctx=context[0]))
+            token_embeddings.append(token_embedding)
+        else:
+            token_embeddings.append(
+                mx.nd.zeros((1, embedding_in.weight.shape[1]), ctx=context[0]))
+
+    # Combine subword and word level embeddings
+    if token_subword_embeddings:
+        assert len(token_embeddings[0].shape) == 2
+        assert token_embeddings[0].shape[1] == \
+            token_subword_embeddings[0].shape[0]
+        embeddings = mx.nd.concat(*token_embeddings, dim=0) + \
+            mx.nd.stack(*token_subword_embeddings)
+    elif token_embeddings:
+        assert len(token_embeddings[0].shape) == 2
+        embeddings = mx.nd.concat(*token_embeddings, dim=0)
+    else:
+        # Didn't get any embeddings
+        embeddings = mx.nd.array([], ctx=context[0])
+
+    return token_to_idx, embeddings
+
+
+def _filter_similarity_dataset(token_to_idx, dataset):
     initial_length = len(dataset)
     dataset = [
-        d for d in dataset
-        if d[0] in vocab.token_to_idx and d[1] in vocab.token_to_idx
+        d for d in dataset if d[0] in token_to_idx and d[1] in token_to_idx
     ]
+
     num_dropped = initial_length - len(dataset)
     if num_dropped:
         logging.debug('Dropped %s pairs from %s as the were OOV.', num_dropped,
                       dataset.__class__.__name__)
+    return dataset
 
-    dataset_coded = [[
-        vocab.token_to_idx[d[0]], vocab.token_to_idx[d[1]], d[2]
-    ] for d in dataset]
+
+def evaluate_similarity(args, vocab, subword_vocab, embedding_in, subword_net,
+                        dataset, similarity_function='CosineSimilarity'):
+    """Evaluation on similarity task."""
+    tokens = set(itertools.chain.from_iterable((d[0], d[1]) for d in dataset))
+    tokens = list(tokens)
+
+    # Get token embedding matrix based on word and subword information
+    token_to_idx, idx_to_vec = construct_vocab_embedding_for_dataset(
+        args, tokens, vocab, embedding_in, subword_vocab, subword_net)
+    dataset = _filter_similarity_dataset(token_to_idx, dataset)
+    dataset_coded = [[token_to_idx[d[0]], token_to_idx[d[1]], d[2]]
+                     for d in dataset]
 
     if not dataset_coded:
+        logging.info('Dataset {} contains only OOV. Skipping.'.format(
+            dataset.__class__.__name__))
         return 0, 0
 
-    words1, words2, scores = zip(*dataset_coded)
-
-    context = utils.get_context(args)
-
-    # Prepare remapping of indices for use with subwords
-    token_bytes, unique_indices = subword_vocab.to_subwords(
-        indices=words1 + words2)
-    words1 = subword_vocab.remap_indices(unique_indices, words1)
-    words2 = subword_vocab.remap_indices(unique_indices, words2)
-
-    # Get vectors from Subword Network
-    token_bytes = mx.nd.array(token_bytes, ctx=context[0])
-    subword_idx_to_vec = subword_net(token_bytes)
-
-    # Get vectors from TokenEmbedding
-    token_idx_to_vec = embedding_in.weight.data(ctx=context[0]).retain(
-        mx.nd.array(unique_indices, ctx=context[0])).data
-
-    # Combine vectors
-    idx_to_vec = subword_idx_to_vec + token_idx_to_vec
-
     # Evaluate
+    words1, words2, scores = zip(*dataset_coded)
     evaluator = nlp.embedding.evaluation.WordEmbeddingSimilarity(
         idx_to_vec=idx_to_vec, similarity_function=similarity_function)
     context = utils.get_context(args)
@@ -105,8 +167,6 @@ def evaluate_num_zero_rows(args, embedding_in, eps=1E-5):
 def evaluate(args, embedding_in, subword_net, vocab, subword_vocab):
     sr_correlation = 0
     for dataset_name in args.similarity_datasets:
-        if subword_net is None:  # TODO Implement
-            continue
         if stats is None:
             raise RuntimeError(
                 'Similarity evaluation requires scipy.'
