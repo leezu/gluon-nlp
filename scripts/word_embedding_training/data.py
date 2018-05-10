@@ -28,6 +28,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 
 import gluonnlp as nlp
+import subword
 import utils
 
 try:
@@ -124,8 +125,12 @@ def _get_train_dataset(args, vocab, coded):
             subword_vocab = nlp.SubwordVocab(idx_to_token=vocab.idx_to_token,
                                              subword_function=subword_function,
                                              merge_indices=False)
+
+            # Get subword network data requirements
+            min_size = subword.list_subwordnetworks(
+                args.subword_network).min_size
             dataset = nlp.data.SkipGramWordEmbeddingDataset(
-                coded, idx_to_counts, subword_vocab)
+                coded, idx_to_counts, subword_vocab, min_size=min_size)
         else:  # Optimized fasttext data iterator for fasttext
             subword_function = nlp.vocab.create(
                 'NGramSubwords', vocabulary=vocab, ngrams=[3, 4, 5, 6],
@@ -133,7 +138,6 @@ def _get_train_dataset(args, vocab, coded):
             subword_vocab = nlp.SubwordVocab(idx_to_token=vocab.idx_to_token,
                                              subword_function=subword_function,
                                              merge_indices=True)
-
             dataset = nlp.data.SkipGramFasttextWordEmbeddingDataset(
                 coded, idx_to_counts, subword_vocab)
     else:

@@ -56,10 +56,13 @@ def create(name, **kwargs):
     return create_(name, **kwargs)
 
 
-def list_subwordnetworks():
+def list_subwordnetworks(name=None):
     """List all registered networks."""
     reg = mx.registry.get_registry(SubwordNetwork)
-    return list(reg.keys())
+    if not name:
+        return list(reg.keys())
+    else:
+        return reg[name.lower()]
 
 
 ###############################################################################
@@ -71,6 +74,8 @@ class SubwordNetwork(gluon.Block):
     Expects subword sequences in NTC layout.
 
     """
+
+    min_size = 0
 
 
 @register
@@ -212,6 +217,8 @@ class SubwordCNN(SubwordNetwork, gluon.HybridBlock):
         Size of the input vocabulary. Usually the input vocabulary is the
         number of distinct bytes.
     """
+
+    min_size = 5  # Minimum length, corresponds to largest filter size
 
     def __init__(self, embed_size, output_size, vocab_size=256, **kwargs):
         super(SubwordCNN, self).__init__(**kwargs)

@@ -56,7 +56,7 @@ def construct_vocab_embedding_for_dataset(args, tokens, vocab, embedding_in,
                 else:
                     known_tokens.append(token)
                     token_subword_embeddings.append(
-                        mx.nd.zeros((embedding_in.weight.shape[1], ),
+                        mx.nd.zeros((1, embedding_in.weight.shape[1]),
                                     ctx=context[0]))
                     continue
 
@@ -64,11 +64,23 @@ def construct_vocab_embedding_for_dataset(args, tokens, vocab, embedding_in,
                 # Add batch dimension and infer token_subword_embedding
                 subword_indices_nd = mx.nd.expand_dims(subword_indices_nd, 0)
                 mask = mx.nd.ones_like(subword_indices_nd)
+                if subword_indices_nd.shape[1] < subword_net.subword.min_size:
+                    missing = (subword_net.subword.min_size -
+                               subword_indices_nd.shape[1])
+                    subword_indices_nd = mx.nd.concat(
+                        subword_indices_nd,
+                        mx.nd.zeros((1, missing),
+                                    ctx=subword_indices_nd.context))
+                    mask = mx.nd.concat(mask,
+                                        mx.nd.zeros((1, missing),
+                                                    ctx=mask.context))
                 token_subword_embedding = subword_net(subword_indices_nd, mask)
                 token_subword_embeddings.append(token_subword_embedding)
             else:  # Subword indices should be applicable for embedding_in
                 subword_embeddings = embedding_in(subword_indices_nd)
                 token_subword_embedding = mx.nd.sum(subword_embeddings, axis=0)
+                token_subword_embedding = mx.nd.expand_dims(
+                    token_subword_embedding, 0)
                 token_subword_embeddings.append(token_subword_embedding)
 
             known_tokens.append(token)
@@ -91,11 +103,10 @@ def construct_vocab_embedding_for_dataset(args, tokens, vocab, embedding_in,
 
     # Combine subword and word level embeddings
     if token_subword_embeddings:
-        assert len(token_embeddings[0].shape) == 2
-        assert token_embeddings[0].shape[1] == \
-            token_subword_embeddings[0].shape[0]
+        assert token_embeddings[0].shape == \
+            token_subword_embeddings[0].shape
         embeddings = mx.nd.concat(*token_embeddings, dim=0) + \
-            mx.nd.stack(*token_subword_embeddings)
+            mx.nd.concat(*token_subword_embeddings, dim=0)
     elif token_embeddings:
         assert len(token_embeddings[0].shape) == 2
         embeddings = mx.nd.concat(*token_embeddings, dim=0)

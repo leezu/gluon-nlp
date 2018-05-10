@@ -236,13 +236,12 @@ def train(args):
             mx.nd.waitall()
 
             # Load data for training embedding matrix to context[0]
-            source = gluon.utils.split_and_load(source, [context[0]])[0]
-            target = gluon.utils.split_and_load(target, [context[0]])[0]
-            label = gluon.utils.split_and_load(label, [context[0]])[0]
+            source = mx.nd.array(source, ctx=context[0])
+            target = mx.nd.array(target, ctx=context[0])
+            label = mx.nd.array(label, ctx=context[0])
 
             # Load indices for looking up subword embedding to context[0]
-            source_subword = gluon.utils.split_and_load(
-                source_subword, [context[0]])[0]
+            source_subword = mx.nd.array(source_subword, ctx=context[0])
 
             # Split and load subword info to all GPUs for accelerated computation
             assert unique_token_subwordsequences.shape == mask.shape

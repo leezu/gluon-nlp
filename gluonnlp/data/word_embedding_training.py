@@ -145,7 +145,8 @@ class _WordEmbeddingDataset(Dataset):
     """
 
     def __init__(self, coded, idx_to_counts, subword_vocab=None,
-                 keep_max_size=False, window=5, negative=5, power=0.75):
+                 keep_max_size=False, min_size=0, window=5, negative=5,
+                 power=0.75):
         idx_to_subwordidxs = subword_vocab.indices_to_subwordindices(
             list(range(len(idx_to_counts))))
 
@@ -165,6 +166,7 @@ class _WordEmbeddingDataset(Dataset):
         self.negative = negative
         self.power = power
         self.keep_max_size = keep_max_size
+        self.min_size = min_size
 
         # Flatten the datastructures
         self._sentence_boundaries = np.cumsum([len(s) for s in coded])
@@ -200,7 +202,7 @@ class SkipGramWordEmbeddingDataset(_WordEmbeddingDataset):
          unique_token_subwordsequences, mask) = _build_sg_batch(
              self.coded, idx, self.window, self.negative,
              self._smoothed_token_freq_cumsum, self._sentence_boundaries,
-             self.idx_to_subwordidxs, self.keep_max_size)
+             self.idx_to_subwordidxs, self.keep_max_size, self.min_size)
         source_subword = npi.remap(
             source.flatten(), unique_token_idxs,
             np.arange(unique_token_idxs.shape[0])).reshape(source.shape)
@@ -214,7 +216,8 @@ class SkipGramWordEmbeddingDataset(_WordEmbeddingDataset):
 
 @numba.njit(nogil=True)
 def _build_sg_batch(coded, idxs, window, negative, token_freq_cumsum,
-                    sentence_boundaries, idx_to_subwordidxs, keep_max_size):
+                    sentence_boundaries, idx_to_subwordidxs, keep_max_size,
+                    min_size):
     batch_size = len(idxs)
 
     num_sources = 1
@@ -239,14 +242,14 @@ def _build_sg_batch(coded, idxs, window, negative, token_freq_cumsum,
         unique_token_idxs.astype(np.int32)]
 
     unique_token_subwordsequences, mask = _mask_2d(
-        unique_token_subwordsequences, keep_max_size)
+        unique_token_subwordsequences, keep_max_size, min_size)
 
     return (sources, targets, labels, unique_token_idxs,
             unique_token_subwordsequences, mask)
 
 
 @numba.njit(nogil=True)
-def _mask_2d(array, keep_max_size):
+def _mask_2d(array, keep_max_size, min_size):
     assert len(array.shape) == 2
     token_length = np.zeros((array.shape[0], ))
     mask = np.zeros_like(array)
@@ -259,13 +262,14 @@ def _mask_2d(array, keep_max_size):
         mask[i, :length] = 1
     # Throw away unneeded padding zeros
     if not keep_max_size:
-        array = array[:, :np.max(token_length)]
-        mask = mask[:, :np.max(token_length)]
+        new_length = max(np.max(token_length), min_size + 1)
+        array = array[:, :new_length]
+        mask = mask[:, :new_length]
     return array, mask
 
 
 @numba.njit(nogil=True)
-def _mask_3d(array, keep_max_size):
+def _mask_3d(array, keep_max_size, min_size):
     assert len(array.shape) == 3
     token_length = np.zeros((array.shape[0] * array.shape[1], ))
     mask = np.zeros_like(array)
@@ -279,8 +283,9 @@ def _mask_3d(array, keep_max_size):
             mask[i, j, :length] = 1
     # Throw away unneeded padding zeros
     if not keep_max_size:
-        array = array[:, :, :np.max(token_length)]
-        mask = mask[:, :, :np.max(token_length)]
+        new_length = max(np.max(token_length), min_size + 1)
+        array = array[:, :, :new_length]
+        mask = mask[:, :, :new_length]
     return array, mask
 
 
@@ -337,7 +342,7 @@ class SkipGramFasttextWordEmbeddingDataset(_WordEmbeddingDataset):
         (source, target, label, subword_mask) = _build_sg_fasttext_batch(
             self.coded, idx, self.window, self.negative,
             self._smoothed_token_freq_cumsum, self._sentence_boundaries,
-            self.idx_to_subwordidxs, self.keep_max_size)
+            self.idx_to_subwordidxs, self.keep_max_size, self.min_size)
         if len(idx) == 1:
             return source[0], target[0], label[0], subword_mask[0]
         else:
@@ -347,7 +352,7 @@ class SkipGramFasttextWordEmbeddingDataset(_WordEmbeddingDataset):
 @numba.njit(nogil=True)
 def _build_sg_fasttext_batch(coded, idxs, window, negative, token_freq_cumsum,
                              sentence_boundaries, idx_to_subwordsequence,
-                             keep_max_size):
+                             keep_max_size, min_size):
     batch_size = len(idxs)
     # shape has +1 as fasttext also takes the token index itself
     max_subwordsequence_len = idx_to_subwordsequence.shape[1] + 1
@@ -373,5 +378,5 @@ def _build_sg_fasttext_batch(coded, idxs, window, negative, token_freq_cumsum,
         targets[i] = target
         labels[i] = label
 
-    source, mask = _mask_3d(sources, keep_max_size)
+    source, mask = _mask_3d(sources, keep_max_size, min_size)
     return sources, targets, labels, mask
