@@ -154,9 +154,9 @@ class SubwordEmbeddings(gluon.HybridBlock):
                                               embed_size=32,
                                               output_size=embedding_dim)
 
-    def hybrid_forward(self, F, token_bytes):
+    def hybrid_forward(self, F, token_bytes, mask):
         # TODO add valid length mask for the subword time pool
-        return self.subword(token_bytes)
+        return self.subword(token_bytes, mask)
 
 
 ###############################################################################
@@ -186,9 +186,10 @@ def get_model(args, train_dataset):
 
     loss = gluon.loss.SigmoidBinaryCrossEntropyLoss()
 
-    embedding_in.hybridize()
-    embedding_out.hybridize()
-    # subword_net.hybridize()
+    if not args.dont_hybridize:
+        embedding_in.hybridize()
+        embedding_out.hybridize()
+        subword_net.hybridize()
 
     return embedding_in, embedding_out, subword_net, loss
 
@@ -229,8 +230,9 @@ def train(args):
 
         num_workers = math.ceil(mp.cpu_count() * 0.8)
         executor = ThreadPoolExecutor(max_workers=num_workers)
-        for i, (source, target, label, token_bytes, source_subword) in zip(
-                t, executor.map(train_dataset.__getitem__, batches)):
+        for i, (source, target, label,
+                unique_token_subwordsequences, source_subword, mask) in zip(
+                    t, executor.map(train_dataset.__getitem__, batches)):
             mx.nd.waitall()
 
             # Load data for training embedding matrix to context[0]
@@ -241,18 +243,23 @@ def train(args):
             # Load indices for looking up subword embedding to context[0]
             source_subword = gluon.utils.split_and_load(
                 source_subword, [context[0]])[0]
-            # TODO(leezu): take a mask and pass it to the subword network
 
             # Split and load subword info to all GPUs for accelerated computation
-            token_bytes = gluon.utils.split_and_load(
-                token_bytes, context, batch_axis=1, even_split=False)
+            assert unique_token_subwordsequences.shape == mask.shape
+            unique_token_subwordsequences = gluon.utils.split_and_load(
+                unique_token_subwordsequences, context, batch_axis=1,
+                even_split=False)
+            mask = gluon.utils.split_and_load(mask, context, batch_axis=1,
+                                              even_split=False)
 
             with mx.autograd.record():
                 # Compute subword embeddings from subword info (byte sequences)
                 subword_embedding_weights = []
-                for token_bytes_ctx in token_bytes:
+                for subwordsequences_ctx, mask_ctx in zip(
+                        unique_token_subwordsequences, mask):
                     subword_embedding_weights.append(
-                        subword_net(token_bytes_ctx).as_in_context(context[0]))
+                        subword_net(subwordsequences_ctx,
+                                    mask_ctx).as_in_context(context[0]))
                 subword_embedding_weights = mx.nd.concat(
                     *subword_embedding_weights, dim=0)
 

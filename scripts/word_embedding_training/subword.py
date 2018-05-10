@@ -133,7 +133,7 @@ class SubwordRNN(SubwordNetwork, gluon.HybridBlock):
             if self._dropout:
                 embedding.add(gluon.nn.Dropout(self._dropout))
 
-            # Change NTC to TNC layout (for CNN)
+            # Change NTC to TNC layout (for RNN)
             embedding.add(gluon.nn.HybridLambda(lambda F, x: x.swapaxes(0, 1)))
         return embedding
 
@@ -179,7 +179,7 @@ class SubwordRNN(SubwordNetwork, gluon.HybridBlock):
     def begin_state(self, *args, **kwargs):
         return self.encoder.begin_state(*args, **kwargs)
 
-    def hybrid_forward(self, F, inputs, begin_state=None):  # pylint: disable=arguments-differ
+    def hybrid_forward(self, F, inputs, mask, begin_state=None):  # pylint: disable=arguments-differ
         """Defines the forward computation. Arguments can be either
         :py:class:`NDArray` or :py:class:`Symbol`."""
         encoded = self.embedding(inputs)
@@ -189,6 +189,11 @@ class SubwordRNN(SubwordNetwork, gluon.HybridBlock):
         if self._dropout:
             encoded = F.Dropout(encoded, p=self._dropout, axes=(0, ))
         out = self.decoder(encoded)
+
+        # Switch mask from NT to TN
+        mask = F.transpose(mask)
+        out = F.broadcast_mul(out, F.expand_dims(mask, axis=-1))
+
         out = F.max(out, axis=0)
         return out
 
@@ -214,7 +219,7 @@ class SubwordCNN(SubwordNetwork, gluon.HybridBlock):
         self._output_size = output_size
         self._vocab_size = vocab_size
 
-        self.num_feature_maps = 32
+        self.num_feature_maps = embed_size
         self.filter_sizes = [5]
         self.dropout_embedding = 0.3
         self.dropout_cnn = 0.3
@@ -252,6 +257,7 @@ class SubwordCNN(SubwordNetwork, gluon.HybridBlock):
                                                kernel_size=size, strides=1,
                                                use_bias=True, layout='NCW',
                                                activation='relu'))
+
                         seq.add(
                             gluon.nn.HybridLambda(
                                 lambda F, x: F.max(x, axis=2)))
@@ -273,10 +279,15 @@ class SubwordCNN(SubwordNetwork, gluon.HybridBlock):
             output.add(gluon.nn.Dense(self._output_size, flatten=False))
         return output
 
-    def hybrid_forward(self, F, inputs, begin_state=None):  # pylint: disable=arguments-differ
+    def hybrid_forward(self, F, inputs, mask, begin_state=None):  # pylint: disable=arguments-differ
         """Defines the forward computation. Arguments can be either
         :py:class:`NDArray` or :py:class:`Symbol`."""
-        encoded = self.embedding(inputs)
-        encoded = self.encoder(encoded)
+
+        embeddings = self.embedding(inputs)
+
+        # Expand mask from NT to NCT where C is broadcasted
+        embeddings_masked = F.broadcast_mul(embeddings, F.expand_dims(mask, 1))
+
+        encoded = self.encoder(embeddings_masked)
         out = self.decoder(encoded)
         return out

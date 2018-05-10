@@ -145,7 +145,7 @@ class _WordEmbeddingDataset(Dataset):
     """
 
     def __init__(self, coded, idx_to_counts, subword_vocab=None,
-                 fixed_size_subwords=False, window=5, negative=5, power=0.75):
+                 keep_max_size=False, window=5, negative=5, power=0.75):
         idx_to_subwordidxs = subword_vocab.indices_to_subwordindices(
             list(range(len(idx_to_counts))))
 
@@ -157,12 +157,14 @@ class _WordEmbeddingDataset(Dataset):
                        ), constant_values=-1, mode='constant')
             for b in idx_to_subwordidxs)
 
+        assert idx_to_subwordidxs.dtype == np.int
+
         self.idx_to_counts = idx_to_counts
         self.idx_to_subwordidxs = idx_to_subwordidxs
         self.window = window
         self.negative = negative
         self.power = power
-        self.fixed_size_subwords = fixed_size_subwords
+        self.keep_max_size = keep_max_size
 
         # Flatten the datastructures
         self._sentence_boundaries = np.cumsum([len(s) for s in coded])
@@ -194,30 +196,33 @@ class SkipGramWordEmbeddingDataset(_WordEmbeddingDataset):
     def __getitem__(self, idx):
         # Make sure idx is of shape (batch_size,)
         idx = np.array(idx).flatten()
-        (source, target, label,
-         unique_token_idxs, token_bytes) = _build_sg_batch(
+        (source, target, label, unique_token_idxs,
+         unique_token_subwordsequences, mask) = _build_sg_batch(
              self.coded, idx, self.window, self.negative,
              self._smoothed_token_freq_cumsum, self._sentence_boundaries,
-             self.idx_to_subwordidxs, self.fixed_size_subwords)
+             self.idx_to_subwordidxs, self.keep_max_size)
         source_subword = npi.remap(
             source.flatten(), unique_token_idxs,
             np.arange(unique_token_idxs.shape[0])).reshape(source.shape)
         if len(idx) == 1:
-            return (source[0], target[0], label[0], token_bytes,
-                    source_subword[0])
+            return (source[0], target[0], label[0],
+                    unique_token_subwordsequences, source_subword[0], mask)
         else:
-            return (source, target, label, token_bytes, source_subword)
+            return (source, target, label, unique_token_subwordsequences,
+                    source_subword, mask)
 
 
 @numba.njit(nogil=True)
 def _build_sg_batch(coded, idxs, window, negative, token_freq_cumsum,
-                    sentence_boundaries, idx_to_subwordidxs,
-                    fixed_size_subwords):
+                    sentence_boundaries, idx_to_subwordidxs, keep_max_size):
     batch_size = len(idxs)
 
-    sources = np.zeros((batch_size, 1), dtype=np.float32)
-    targets = np.zeros((batch_size, negative + 1), dtype=np.float32)
-    labels = np.zeros((batch_size, negative + 1), dtype=np.float32)
+    num_sources = 1
+    num_targets = negative + 1
+
+    sources = np.zeros((batch_size, num_sources), dtype=np.float32)
+    targets = np.zeros((batch_size, num_targets), dtype=np.float32)
+    labels = np.zeros((batch_size, num_targets), dtype=np.float32)
 
     for i in numba.prange(batch_size):
         idx = idxs[i]
@@ -229,25 +234,54 @@ def _build_sg_batch(coded, idxs, window, negative, token_freq_cumsum,
         labels[i] = label
 
     # Find the subword information for all tokens included in the batch
-    unique_token_idxs_sources = np.unique(sources)
-    unique_token_idxs_targets = np.unique(targets)
-    unique_token_idxs = np.unique(
-        np.concatenate((unique_token_idxs_sources, unique_token_idxs_targets)))
-    token_bytes = idx_to_subwordidxs[unique_token_idxs.astype(np.int32)]
+    unique_token_idxs = np.unique(sources)
+    unique_token_subwordsequences = idx_to_subwordidxs[
+        unique_token_idxs.astype(np.int32)]
 
+    unique_token_subwordsequences, mask = _mask_2d(
+        unique_token_subwordsequences, keep_max_size)
+
+    return (sources, targets, labels, unique_token_idxs,
+            unique_token_subwordsequences, mask)
+
+
+@numba.njit(nogil=True)
+def _mask_2d(array, keep_max_size):
+    assert len(array.shape) == 2
+    token_length = np.zeros((array.shape[0], ))
+    mask = np.zeros_like(array)
+    for i in numba.prange(array.shape[0]):
+        length = np.argmax(array[i] == -1)
+        if length == 0:  # If -1 is not present
+            length = array.shape[-1]
+        token_length[i] = length
+        array[i, length:] = 0
+        mask[i, :length] = 1
     # Throw away unneeded padding zeros
-    # TODO(leezu): 0 is also a valid subword idx → replace with -1 here and
-    # later with 0 once the mask is constructed. See fasttext version
-    if not fixed_size_subwords:
-        token_length = np.zeros((token_bytes.shape[0], ))
-        for i in numba.prange(token_bytes.shape[0]):
-            token_length[i] = np.argmax(token_bytes[i] == 0)
-        token_bytes = token_bytes[:, :np.max(token_length)]
+    if not keep_max_size:
+        array = array[:, :np.max(token_length)]
+        mask = mask[:, :np.max(token_length)]
+    return array, mask
 
-    # Use TNC layout for sequences
-    token_bytes = token_bytes.T
 
-    return sources, targets, labels, unique_token_idxs, token_bytes
+@numba.njit(nogil=True)
+def _mask_3d(array, keep_max_size):
+    assert len(array.shape) == 3
+    token_length = np.zeros((array.shape[0] * array.shape[1], ))
+    mask = np.zeros_like(array)
+    for i in numba.prange(array.shape[0]):
+        for j in range(array.shape[1]):
+            length = np.argmax(array[i][j] == -1)
+            if length == 0:  # If -1 is not present
+                length = array.shape[-1]
+            token_length[i * array.shape[1] + j] = length
+            array[i, j, length:] = 0
+            mask[i, j, :length] = 1
+    # Throw away unneeded padding zeros
+    if not keep_max_size:
+        array = array[:, :, :np.max(token_length)]
+        mask = mask[:, :, :np.max(token_length)]
+    return array, mask
 
 
 @numba.njit(nogil=True)
@@ -261,7 +295,8 @@ def _build_sg_item(coded, idx, window, negative, token_freq_cumsum,
         sentence_boundaries, sentence_idx)
 
     # TODO Throw away "sentences" for which assertion does not hold in Dataset class
-    assert sentence_end - sentence_start > 1, "Can't sample positive target from sentence with only one word"
+    assert sentence_end - sentence_start > 1, \
+        "Can't sample positive target from sentence with only one word"
 
     # `b` in the original word2vec code
     random_reduced_window_size = np.random.randint(1, window)
@@ -302,7 +337,7 @@ class SkipGramFasttextWordEmbeddingDataset(_WordEmbeddingDataset):
         (source, target, label, subword_mask) = _build_sg_fasttext_batch(
             self.coded, idx, self.window, self.negative,
             self._smoothed_token_freq_cumsum, self._sentence_boundaries,
-            self.idx_to_subwordidxs, self.fixed_size_subwords)
+            self.idx_to_subwordidxs, self.keep_max_size)
         if len(idx) == 1:
             return source[0], target[0], label[0], subword_mask[0]
         else:
@@ -312,14 +347,14 @@ class SkipGramFasttextWordEmbeddingDataset(_WordEmbeddingDataset):
 @numba.njit(nogil=True)
 def _build_sg_fasttext_batch(coded, idxs, window, negative, token_freq_cumsum,
                              sentence_boundaries, idx_to_subwordsequence,
-                             fixed_size_subwords):
+                             keep_max_size):
     batch_size = len(idxs)
     # shape has +1 as fasttext also takes the token index itself
-    max_subwordsequence_shape = idx_to_subwordsequence.shape[1] + 1
+    max_subwordsequence_len = idx_to_subwordsequence.shape[1] + 1
     num_sources = 1
     num_targets = negative + 1
 
-    sources = np.zeros((batch_size, num_sources, max_subwordsequence_shape),
+    sources = np.zeros((batch_size, num_sources, max_subwordsequence_len),
                        dtype=np.float32)
     targets = np.zeros((batch_size, num_targets), dtype=np.float32)
     labels = np.zeros((batch_size, num_targets), dtype=np.float32)
@@ -338,19 +373,5 @@ def _build_sg_fasttext_batch(coded, idxs, window, negative, token_freq_cumsum,
         targets[i] = target
         labels[i] = label
 
-    # Prepare mask
-    token_length = np.zeros((sources.shape[0] * num_sources, ))
-    mask = np.zeros_like(sources)
-    for i in numba.prange(sources.shape[0]):
-        for j in range(num_sources):
-            length = np.argmax(sources[i][j] == -1)
-            token_length[i * num_sources + j] = length
-            sources[i, j, length:] = 0
-            mask[i, j, :length] = 1
-
-    # Throw away unneeded padding zeros
-    if not fixed_size_subwords:
-        sources = sources[:, :, :np.max(token_length)]
-        mask = mask[:, :, :np.max(token_length)]
-
+    source, mask = _mask_3d(sources, keep_max_size)
     return sources, targets, labels, mask

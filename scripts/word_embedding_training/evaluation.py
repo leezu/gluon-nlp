@@ -63,7 +63,8 @@ def construct_vocab_embedding_for_dataset(args, tokens, vocab, embedding_in,
             if subword_net is not None:
                 # Add batch dimension and infer token_subword_embedding
                 subword_indices_nd = mx.nd.expand_dims(subword_indices_nd, 0)
-                token_subword_embedding = subword_net(subword_indices_nd)
+                mask = mx.nd.ones_like(subword_indices_nd)
+                token_subword_embedding = subword_net(subword_indices_nd, mask)
                 token_subword_embeddings.append(token_subword_embedding)
             else:  # Subword indices should be applicable for embedding_in
                 subword_embeddings = embedding_in(subword_indices_nd)

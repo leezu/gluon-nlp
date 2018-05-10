@@ -589,7 +589,8 @@ class ByteSubwords(_SubwordFunction):
         self.encoding = encoding
 
     def __call__(self, words):
-        generator = (np.frombuffer(word.encode(self.encoding), dtype=np.uint8)
+        generator = (np.frombuffer(word.encode(self.encoding),
+                                   dtype=np.uint8).astype(np.int_)
                      for word in words)
         return generator
 
