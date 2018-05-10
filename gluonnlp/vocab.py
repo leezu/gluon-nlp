@@ -31,7 +31,7 @@ import warnings
 import collections
 import itertools
 
-from mxnet import nd
+from mxnet import nd, registry
 import numpy as np
 import numpy_indexed as npi
 
@@ -40,6 +40,9 @@ from . import _constants as C
 from . import embedding as emb
 
 
+###############################################################################
+# Token level vocabulary
+###############################################################################
 class Vocab(object):
     """Indexing and embedding attachment for text tokens.
 
@@ -471,6 +474,9 @@ class Vocab(object):
         return vocab
 
 
+###############################################################################
+# Subword level vocabulary
+###############################################################################
 class SubwordVocab(object):
     """Token index and string to subword unit mapping.
 
@@ -489,125 +495,158 @@ class SubwordVocab(object):
 
     """
 
-    def __init__(self, idx_to_token, mode, merge_indices=True,
-                 max_indices=2000000):
+    def __init__(self, idx_to_token, subword_function, merge_indices):
         self.idx_to_token = idx_to_token
-        self.mode = mode
+        self.subword_function = subword_function
         self.merge_indices = merge_indices
 
-        if isinstance(mode, str) and mode.lower() == 'byte':
-            self.idx_to_subwordidxs = self._get_bytes(idx_to_token)
-        elif isinstance(mode, (list, tuple)):
-            (self.idx_to_subwordidxs, self._subwordidx_to_subword,
-             self.subword_to_idx) = self._get_ngrams(idx_to_token, ngrams=mode,
-                                                     merge_indices=True,
-                                                     max_indices=max_indices)
-        else:
-            raise ValueError('Subword vocabulary mode is invalid.')
+        # Precompute a idx to subwordidxs mapping to support fast lookup
+        self._idx_to_subwordidxs = list(subword_function(idx_to_token))
+        logging.info(('Constructing subword vocabulary with {}. '
+                      'The word with largest number of subwords '
+                      'has {} subwords.').format(
+                          subword_function,
+                          max(len(s) for s in self._idx_to_subwordidxs)))
 
-    @staticmethod
-    def _get_bytes(idx_to_token):
-        idx_to_bytes = [
-            np.frombuffer(token.encode('utf-8'), dtype=np.uint8)
-            for token in idx_to_token
-        ]
-        logging.info(
-            'Constructing subword vocabulary based on byte sequences. '
-            'Longest byte sequence has length {}'.format(
-                max(len(s) for s in idx_to_bytes)))
+    def _do_handle_merge_indices(self, subwordindices):
+        if self.merge_indices:
+            subwordindices = [
+                i + len(self.idx_to_token) for i in subwordindices
+            ]
+        return subwordindices
 
-        return idx_to_bytes
+    def _undo_handle_merge_indices(self, subwordindices):
+        if self.merge_indices:
+            subwordindices = [
+                i - len(self.idx_to_token) for i in subwordindices
+            ]
+        return subwordindices
 
-    @staticmethod
-    def _get_ngrams(idx_to_token, ngrams, merge_indices, max_indices):
-        '''Compute all ngrams of tokens in idx_to_token.
+    def indices_to_subwordindices(self, indices):
+        subwordindices = [self._idx_to_subwordidxs[i] for i in indices]
+        return self._do_handle_merge_indices(subwordindices)
 
-        If merge indices is True, ngram indices start after the token indices.
-        Otherwise they start from 0. The total number of indices is bounded by
-        max_indices. It must hold 'max_indices > len(idx_to_token)'. The ngram
-        indices are sorted by frequency.
+    def words_to_subwordindices(self, words):
+        subwordindices = self.subword_function(words)
+        return self._do_handle_merge_indices(subwordindices)
 
-        '''
-        assert all(isinstance(N, int) for N in ngrams)
-        if merge_indices:
-            assert max_indices > len(idx_to_token)
-        assert max_indices > 0
+    def subwordindices_to_subwords(self, subwordindices):
+        subwordindices = self._undo_handle_merge_indices(subwordindices)
+        return self.subword_function.indices_to_subwords(subwordindices)
 
-        def get_ngram_generator():
-            '''Iterator over iterators of ngrams per token.'''
-            return ((('<' + token + '>')[i:i + N] for N in ngrams
-                     for i in range((len(token) + 2) - N + 1))
-                    for token in idx_to_token)
+    def subwords_to_subwordindices(self, subwords):
+        return self.subword_function.subwords_to_subwordindices(subwords)
 
-        ngram_generator = get_ngram_generator()
+    def __len__(self):
+        return len(self.subword_function)
+
+
+###############################################################################
+# Subword functions and registry
+###############################################################################
+def register(subword_cls):
+    """Registers a new subword function."""
+    register_text_embedding = registry.get_register_func(
+        _SubwordFunction, 'subword function')
+    return register_text_embedding(subword_cls)
+
+
+def create(subword_function_name, **kwargs):
+    """Creates an instance of a subword function."""
+
+    create_ = registry.get_create_func(_SubwordFunction, 'token embedding')
+    return create_(subword_function_name, **kwargs)
+
+
+def list_sources():
+    """Get valid subword function names."""
+    reg = registry.get_registry(_SubwordFunction)
+    return list(reg.keys())
+
+
+class _SubwordFunction(object):
+    def __init__(self):
+        pass
+
+    def __call__(self, words):
+        '''Return a generator over subwords in the given word.'''
+        raise NotImplementedError
+
+    def __len__(self):
+        '''Return the number of subwords modeled.'''
+        raise NotImplementedError
+
+    def indices_to_subwords(self, indices):
+        raise NotImplementedError
+
+    def subwords_to_indices(self, subwords):
+        raise NotImplementedError
+
+
+@register
+class ByteSubwords(_SubwordFunction):
+    def __init__(self, encoding='utf-8'):
+        self.encoding = encoding
+
+    def __call__(self, words):
+        generator = (np.frombuffer(word.encode(self.encoding), dtype=np.uint8)
+                     for word in words)
+        return generator
+
+    def __len__(self):
+        return 256
+
+    def indices_to_subwords(self, indices):
+        return indices
+
+    def subwords_to_indices(self, subwords):
+        return subwords
+
+
+@register
+class NGramSubwords(_SubwordFunction):
+    def __init__(self, vocabulary, max_num_subwords, ngrams=[3, 4, 5, 6]):
+        self.ngrams = ngrams
+
+        ngram_generator = self._get_all_ngram_generator(
+            vocabulary.idx_to_token, self.ngrams)
         ngram_counter = collections.Counter(
             itertools.chain.from_iterable(ngram_generator))
-
-        if merge_indices:
-            num_subwords = max_indices - len(idx_to_token)
-            idx_offset = len(idx_to_token)
-        else:
-            num_subwords = max_indices
-            idx_offset = 0
-        logging.info(
-            'Constructing subword vocabulary based on ngrams sequences. '
-            f'Keeping {min(len(ngram_counter), num_subwords)} of '
-            f'{len(ngram_counter)} subwords.')
+        num_subwords = min(len(ngram_counter), max_num_subwords)
+        logging.info('Constructing subword vocabulary based on ngrams. '
+                     f'Keeping {num_subwords} of '
+                     f'{len(ngram_counter)} subwords.')
         assert sys.version_info >= (3, 6), 'Only Python 3.6+ supported. ' \
             'We rely on it\'s property of preserving '\
             'dictionary insertion order.'
         subwords_enumeration = enumerate(
-            ngram_counter.most_common(num_subwords), start=idx_offset)
-        subword_to_idx = {w: i for i, (w, _) in subwords_enumeration}
-        subwordidx_to_subword = list(subword_to_idx.keys())  # Requires Py3.6+
+            ngram_counter.most_common(num_subwords))
 
-        ngram_generator = get_ngram_generator()
-        idx_to_subwordidx = [[
-            subword_to_idx[subword] for subword in token_ngrams
-        ] for token_ngrams in ngram_generator]
+        self.subword_to_subwordidx = {
+            w: i
+            for i, (w, _) in subwords_enumeration
+        }
+        # Requires Py3.6+
+        self.subwordidx_to_subword = list(self.subword_to_idx.keys())
 
-        return idx_to_subwordidx, subwordidx_to_subword, subword_to_idx
+    @staticmethod
+    def _get_all_ngram_generator(words, ngrams):
+        return ((('<' + word + '>')[i:i + N] for N in ngrams
+                 for i in range((len(word) + 2) - N + 1)) for word in words)
 
-    def subwordidx_to_subword(self, idx):
-        if isinstance(idx, int):
-            idx = [idx]
-
-        if self.mode == 'byte':
-            return idx
-        else:
-            if self.merge_indices:
-                idx = [i - len(self.idx_to_token) for i in idx]
-            return [self._subwordidx_to_subword[i] for i in idx]
-
-    def to_subwords(self, indices=None, unknown=None):
-        if isinstance(indices, nd.NDArray):
-            indices = indices.asnumpy()
-        elif isinstance(indices, np.ndarray):
-            pass
-        else:
-            indices = np.array(indices)
-
-        # Find the subword information for unique tokens
-        unique_token_indices = np.unique(indices)
-        token_bytes = self.idx_to_bytes[unique_token_indices.astype(np.int32)]
-
-        # TNC layout
-        token_bytes = token_bytes.T
-
-        return token_bytes, unique_token_indices
-
-    def remap_indices(self, unique_token_indices, indices):
-        if isinstance(indices, nd.NDArray):
-            indices = indices.asnumpy()
-        elif isinstance(indices, np.ndarray):
-            pass
-        else:
-            indices = np.array(indices)
-
-        subword_indices = npi.remap(
-            indices.flatten(), unique_token_indices,
-            np.arange(unique_token_indices.shape[0])).reshape(indices.shape)
-        return subword_indices
+    def __call__(self, words):
+        generator = (np.array([
+            self.subword_to_subwordidx[('<' + word + '>')[i:i + N]]
+            for N in self.ngrams for i in range((len(word) + 2) - N + 1)
+            if ('<' + word + '>')[i:i + N] in self.subword_to_subwordidx
+        ]) for word in words)
+        return generator
 
     def __len__(self):
-        return len(self.idx_to_bytes)
+        return len(self.subwordidx_to_subword)
+
+    def indices_to_subwords(self, indices):
+        return [self.subwordidx_to_subword[i] for i in indices]
+
+    def subwords_to_indices(self, subwords):
+        return [self.subword_to_subwordidx[w] for w in subwords]
