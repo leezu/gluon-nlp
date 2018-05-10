@@ -34,7 +34,6 @@ from mxnet import gluon
 
 import data
 import evaluation
-import sparse_ops
 import utils
 
 try:
@@ -125,40 +124,14 @@ def train(args):
 
             loss.backward()
 
-            # Training of embedding
-            for param_i, param in enumerate(
-                [embedding_in.weight, embedding_out.weight]):
-                param_data = param.data(ctx=context[0])
-                param_grad = param.grad(ctx=context[0])
-
-                if args.dont_normalize_gradient:
-                    pass
-                elif (hasattr(mx.nd.sparse, 'l2_normalization')
-                      and not args.force_py_op_normalize_gradient):
-                    norm = mx.nd.sparse.sqrt(
-                        mx.nd._internal._square_sum(param_grad, axis=1,
-                                                    keepdims=True))
-                    mx.nd.sparse.l2_normalization(param_grad, norm,
-                                                  out=param_grad)
-                else:
-                    param_grad = mx.nd.Custom(param_grad,
-                                              op_type='sparse_l2normalization')
-
-                if param_i == 0:  # embedding_in
-                    mx.nd.sparse.sgd_update(
-                        weight=param_data, grad=param_grad,
-                        last_update_buffer=last_update_buffer, lr=args.lr,
-                        sparsity=args.sparsity_lambda,
-                        current_update=current_update, out=param_data)
-                    current_update += 1
-                else:
-                    # TOOD make last_update_buffer optional.
-                    mx.nd.sparse.sgd_update(
-                        weight=param_data,
-                        grad=param_grad, last_update_buffer=mx.nd.zeros(
-                            param.shape,
-                            ctx=param_data.context), lr=args.lr, sparsity=0,
-                        current_update=current_update, out=param_data)
+            utils.train_embedding(args, embedding_in.weight.data(context[0]),
+                                  embedding_in.weight.grad(
+                                      context[0]), with_sparsity=True,
+                                  last_update_buffer=last_update_buffer,
+                                  current_update=current_update)
+            current_update += 1
+            utils.train_embedding(args, embedding_out.weight.data(context[0]),
+                                  embedding_out.weight.grad(context[0]))
 
             if i % args.eval_interval == 0:
                 eval_dict = evaluation.evaluate(args, embedding_in, None,

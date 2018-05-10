@@ -40,7 +40,6 @@ import subword
 
 import data
 import evaluation
-import sparse_ops
 import utils
 
 try:
@@ -279,33 +278,14 @@ def train(args):
             dense_trainer.step(batch_size=args.batch_size)
 
             # Training of sparse params
-            for param_i, param in enumerate(sparse_params):
-                if param.grad_req == 'null':
-                    continue
-
-                # Update of sparse params
-                for device_param, device_grad in zip(param.list_data(),
-                                                     param.list_grad()):
-                    if args.dont_normalize_gradient:
-                        pass
-                    elif (hasattr(mx.nd.sparse, 'l2_normalization')
-                          and not args.force_py_op_normalize_gradient):
-                        norm = mx.nd.sparse.sqrt(
-                            mx.nd._internal._square_sum(
-                                device_grad, axis=1, keepdims=True))
-                        mx.nd.sparse.l2_normalization(device_grad, norm,
-                                                      out=device_grad)
-                    else:
-                        device_grad = mx.nd.Custom(
-                            device_grad, op_type='sparse_l2normalization')
-
-                    # TODO only for embedding_in see fasttext.py
-                    mx.nd.sparse.sgd_update(
-                        weight=device_param, grad=device_grad,
-                        last_update_buffer=last_update_buffer, lr=args.lr,
-                        sparsity=args.sparsity_lambda,
-                        current_update=current_update, out=device_param)
-                    current_update += 1
+            utils.train_embedding(args, embedding_in.weight.data(context[0]),
+                                  embedding_in.weight.grad(
+                                      context[0]), with_sparsity=True,
+                                  last_update_buffer=last_update_buffer,
+                                  current_update=current_update)
+            current_update += 1
+            utils.train_embedding(args, embedding_out.weight.data(context[0]),
+                                  embedding_out.weight.grad(context[0]))
 
             if i % args.eval_interval == 0:
                 eval_dict = evaluation.evaluate(
@@ -326,15 +306,10 @@ def train(args):
                     **eval_dict)
 
         # Force eager gradient update at end of every epoch
-        # TODO only for embedding_in see fasttext.py
-        for device_param, device_grad in zip(param.list_data(),
-                                             param.list_grad()):
-            mx.nd.sparse.sgd_update(
-                weight=device_param, grad=mx.nd.sparse.row_sparse_array(
-                    device_grad.shape,
-                    ctx=context[0]), last_update_buffer=last_update_buffer,
-                lr=args.lr, sparsity=args.sparsity_lambda,
-                current_update=current_update, out=device_param)
+        utils.train_embedding(args, param_grad=None, with_sparsity=True,
+                              last_update_buffer=last_update_buffer,
+                              current_update=current_update, lazy_update=False,
+                              param_data=embedding_in.weight.data(context[0]))
 
         # Shut down ThreadPoolExecutor
         executor.shutdown()
