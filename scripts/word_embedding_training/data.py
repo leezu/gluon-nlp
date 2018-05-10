@@ -117,12 +117,25 @@ def _preprocess_sentences(sentences):
 def _get_train_dataset(args, vocab, coded):
     idx_to_counts = np.array(vocab.idx_to_counts, dtype=int)
     # Get index to byte mapping from vocab
-    subword_vocab = nlp.SubwordVocab(vocab.idx_to_token)
 
-    # TODO construct depending on args
-    sgdataset = nlp.data.SkipGramWordEmbeddingDataset(
-        coded, idx_to_counts, subword_vocab.idx_to_bytes)
-    return sgdataset, vocab, subword_vocab
+    if args.objective.lower() == 'skipgram':
+        if args.subword_network.lower() != 'fasttext':
+            subword_vocab = nlp.SubwordVocab(idx_to_token=vocab.idx_to_token,
+                                             mode='byte')
+            dataset = nlp.data.SkipGramWordEmbeddingDataset(
+                coded, idx_to_counts, subword_vocab.idx_to_subwordidxs)
+        else:  # Optimized fasttext data iterator for fasttext
+            subword_vocab = nlp.SubwordVocab(idx_to_token=vocab.idx_to_token,
+                                             mode=list(range(3, 7)),
+                                             merge_indices=True)
+
+            dataset = nlp.data.SkipGramFasttextWordEmbeddingDataset(
+                coded, idx_to_counts, subword_vocab.idx_to_subwordidxs)
+    else:
+        raise NotImplementedError('Objective {} not implemented.'.format(
+            args.objective))
+
+    return dataset, vocab, subword_vocab
 
 
 def get_train_data(args):

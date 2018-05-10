@@ -20,7 +20,10 @@
 # pylint: disable=
 """Word embedding training datasetst."""
 
-__all__ = ['Text8', 'SkipGramWordEmbeddingDataset']
+__all__ = [
+    'Text8', 'SkipGramWordEmbeddingDataset',
+    'SkipGramFasttextWordEmbeddingDataset'
+]
 
 import os
 import shutil
@@ -141,12 +144,18 @@ class _WordEmbeddingDataset(Dataset):
 
     """
 
-    def __init__(self, coded, idx_to_counts, idx_to_bytes,
-                 fixed_size_subwords=True, window=5, negative=5, power=0.75):
-        assert isinstance(idx_to_bytes, np.ndarray)
+    def __init__(self, coded, idx_to_counts, idx_to_subwordidxs=None,
+                 fixed_size_subwords=False, window=5, negative=5, power=0.75):
+        if not isinstance(idx_to_subwordidxs, np.ndarray):
+            # Convert variable length subword indices per token to a padded
+            # numpy array
+            max_subwordidxs_len = max(len(s) for s in idx_to_subwordidxs)
+            idx_to_subwordidxs = np.stack(
+                np.pad(b, (0, max_subwordidxs_len - len(b)), mode='constant')
+                for b in idx_to_subwordidxs)
 
         self.idx_to_counts = idx_to_counts
-        self.idx_to_bytes = idx_to_bytes
+        self.idx_to_subwordidxs = idx_to_subwordidxs
         self.window = window
         self.negative = negative
         self.power = power
@@ -175,6 +184,9 @@ class _WordEmbeddingDataset(Dataset):
         return len(self._smoothed_token_freq_cumsum)
 
 
+###############################################################################
+# General Subword Embedding Training Dataset for SkipGram objective
+###############################################################################
 class SkipGramWordEmbeddingDataset(_WordEmbeddingDataset):
     def __getitem__(self, idx):
         # Make sure idx is of shape (batch_size,)
@@ -183,7 +195,7 @@ class SkipGramWordEmbeddingDataset(_WordEmbeddingDataset):
          unique_token_idxs, token_bytes) = _build_sg_batch(
              self.coded, idx, self.window, self.negative,
              self._smoothed_token_freq_cumsum, self._sentence_boundaries,
-             self.idx_to_bytes, self.fixed_size_subwords)
+             self.idx_to_subwordidxs, self.fixed_size_subwords)
         source_subword = npi.remap(
             source.flatten(), unique_token_idxs,
             np.arange(unique_token_idxs.shape[0])).reshape(source.shape)
@@ -196,10 +208,11 @@ class SkipGramWordEmbeddingDataset(_WordEmbeddingDataset):
 
 @numba.njit(nogil=True)
 def _build_sg_batch(coded, idxs, window, negative, token_freq_cumsum,
-                    sentence_boundaries, idx_to_bytes, fixed_size_subwords):
+                    sentence_boundaries, idx_to_subwordidxs,
+                    fixed_size_subwords):
     batch_size = len(idxs)
 
-    sources = np.zeros((batch_size, 1), np.float32)
+    sources = np.zeros((batch_size, 1), dtype=np.float32)
     targets = np.zeros((batch_size, negative + 1), dtype=np.float32)
     labels = np.zeros((batch_size, negative + 1), dtype=np.float32)
 
@@ -217,7 +230,7 @@ def _build_sg_batch(coded, idxs, window, negative, token_freq_cumsum,
     unique_token_idxs_targets = np.unique(targets)
     unique_token_idxs = np.unique(
         np.concatenate((unique_token_idxs_sources, unique_token_idxs_targets)))
-    token_bytes = idx_to_bytes[unique_token_idxs.astype(np.int32)]
+    token_bytes = idx_to_subwordidxs[unique_token_idxs.astype(np.int32)]
 
     # Throw away unneeded padding zeros
     if not fixed_size_subwords:
@@ -272,3 +285,62 @@ def _build_sg_item(coded, idx, window, negative, token_freq_cumsum,
         label[i + 1] = 0
 
     return source, target, label
+
+
+###############################################################################
+# Fasttext Optimized Subword Embedding Training Dataset for SkipGram objective
+###############################################################################
+class SkipGramFasttextWordEmbeddingDataset(_WordEmbeddingDataset):
+    def __getitem__(self, idx):
+        # Make sure idx is of shape (batch_size,)
+        idx = np.array(idx).flatten()
+        (source, target, label) = _build_sg_fasttext_batch(
+            self.coded, idx, self.window, self.negative,
+            self._smoothed_token_freq_cumsum, self._sentence_boundaries,
+            self.idx_to_subwordidxs, self.fixed_size_subwords)
+        if len(idx) == 1:
+            return source[0], target[0], label[0]
+        else:
+            return source, target, label
+
+
+@numba.njit(nogil=True)
+def _build_sg_fasttext_batch(coded, idxs, window, negative, token_freq_cumsum,
+                             sentence_boundaries, idx_to_subwordsequence,
+                             fixed_size_subwords):
+    batch_size = len(idxs)
+    # shape has +1 as fasttext also takes the token index itself
+    max_subwordsequence_shape = idx_to_subwordsequence.shape[1] + 1
+    num_sources = 1
+    num_targets = negative + 1
+
+    sources = np.zeros((batch_size, num_sources, max_subwordsequence_shape),
+                       dtype=np.float32)
+    targets = np.zeros((batch_size, num_targets), dtype=np.float32)
+    labels = np.zeros((batch_size, num_targets), dtype=np.float32)
+
+    for i in numba.prange(batch_size):
+        idx = idxs[i]
+        source, target, label = _build_sg_item(coded, idx, window, negative,
+                                               token_freq_cumsum,
+                                               sentence_boundaries)
+
+        # Look up subword sequences for sources
+        sources[i] = np.concatenate(
+            (np.expand_dims(source, -1), idx_to_subwordsequence[source.astype(
+                np.int32)]), axis=1)
+
+        targets[i] = target
+        labels[i] = label
+
+    # Throw away unneeded padding zeros
+    if not fixed_size_subwords:
+        # In 'sources'
+        token_length = np.zeros((sources.shape[0] * num_sources, ))
+        for i in numba.prange(sources.shape[0]):
+            for j in range(num_sources):
+                length = np.argmax(sources[i][j] == 0)
+                token_length[i * num_sources + j] = length
+        sources = sources[:, :, :np.max(token_length)]
+
+    return sources, targets, labels

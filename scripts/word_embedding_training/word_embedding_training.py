@@ -34,6 +34,7 @@ import mxnet as mx
 import numpy as np
 from mxnet import gluon
 
+import fasttext
 import gluonnlp as nlp
 import subword
 
@@ -61,7 +62,9 @@ def get_args():
     group.add_argument(
         '--subword-network', type=str, default='SubwordCNN',
         help=('Network architecture to infer subword level embeddings. ' +
-              str(subword.list_subwordnetworks())))
+              str(subword.list_subwordnetworks()) + ' or fasttext'))
+    group.add_argument('--objective', type=str, default='skipgram',
+                       help='Word embedding training objective.')
     group.add_argument('--emsize', type=int, default=300,
                        help='Size of word embeddings')
     group.add_argument(
@@ -164,9 +167,10 @@ def get_model(args, train_dataset):
     num_tokens = train_dataset.num_tokens
 
     embedding_in = gluon.nn.SparseEmbedding(num_tokens, args.emsize)
-    subword_net = SubwordEmbeddings(embedding_dim=args.emsize,
-                                    length=train_dataset.idx_to_bytes.shape[1],
-                                    subword_network=args.subword_network)
+    subword_net = SubwordEmbeddings(
+        embedding_dim=args.emsize,
+        length=train_dataset.idx_to_subwordidxs.shape[1],
+        subword_network=args.subword_network)
     embedding_out = gluon.nn.SparseEmbedding(num_tokens, args.emsize)
 
     context = utils.get_context(args)
@@ -295,6 +299,7 @@ def train(args):
                         device_grad = mx.nd.Custom(
                             device_grad, op_type='sparse_l2normalization')
 
+                    # TODO only for embedding_in see fasttext.py
                     mx.nd.sparse.sgd_update(
                         weight=device_param, grad=device_grad,
                         last_update_buffer=last_update_buffer, lr=args.lr,
@@ -321,6 +326,7 @@ def train(args):
                     **eval_dict)
 
         # Force eager gradient update at end of every epoch
+        # TODO only for embedding_in see fasttext.py
         for device_param, device_grad in zip(param.list_data(),
                                              param.list_grad()):
             mx.nd.sparse.sgd_update(
@@ -346,4 +352,7 @@ if __name__ == '__main__':
     args_ = get_args()
     validate_args(args_)
 
-    train(args_)
+    if not args_.subword_network == 'fasttext':
+        train(args_)
+    else:
+        fasttext.train(args_)

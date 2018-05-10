@@ -105,6 +105,8 @@ def evaluate_num_zero_rows(args, embedding_in, eps=1E-5):
 def evaluate(args, embedding_in, subword_net, vocab, subword_vocab):
     sr_correlation = 0
     for dataset_name in args.similarity_datasets:
+        if subword_net is None:  # TODO Implement
+            continue
         if stats is None:
             raise RuntimeError(
                 'Similarity evaluation requires scipy.'
