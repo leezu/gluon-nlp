@@ -311,6 +311,7 @@ def train(args):
                               last_update_buffer=last_update_buffer,
                               current_update=current_update, lazy_update=False,
                               param_data=embedding_in.weight.data(context[0]))
+        current_update += 1
 
         # Shut down ThreadPoolExecutor
         executor.shutdown()

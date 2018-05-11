@@ -155,6 +155,7 @@ def train(args):
                 ctx=context[0]), last_update_buffer=last_update_buffer,
             lr=args.lr, sparsity=args.sparsity_lambda,
             current_update=current_update, out=param_data)
+        current_update += 1
 
         # Shut down ThreadPoolExecutor
         executor.shutdown()
