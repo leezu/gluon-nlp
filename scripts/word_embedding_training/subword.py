@@ -79,7 +79,7 @@ class SubwordNetwork(gluon.Block):
 
 
 @register
-class SubwordRNN(SubwordNetwork, gluon.HybridBlock):
+class SubwordRNN(SubwordNetwork):
     """RNN model for sub-word embedding inference.
 
     Parameters
@@ -101,15 +101,15 @@ class SubwordRNN(SubwordNetwork, gluon.HybridBlock):
 
     """
 
-    def __init__(self, mode, length, embed_size, hidden_size, output_size,
-                 vocab_size=256, dropout=0.5, **kwargs):
+    def __init__(self, mode, embed_size, hidden_size, output_size,
+                 num_layers=1, vocab_size=256, dropout=0.5, **kwargs):
         super(SubwordRNN, self).__init__(**kwargs)
         self._mode = mode
-        self._length = length
         self._embed_size = embed_size
         self._hidden_size = hidden_size
         self._output_size = output_size
         self._dropout = dropout
+        self._num_layers = num_layers
         self._vocab_size = vocab_size
 
         self._bidirectional = True
@@ -120,13 +120,7 @@ class SubwordRNN(SubwordNetwork, gluon.HybridBlock):
 
         with self.name_scope():
             self.embedding = self._get_embedding()
-            self.cell = self._get_cell(
-                mode=self._mode, bidirectional=self._bidirectional,
-                input_size=self._embed_size, hidden_size=self._hidden_size,
-                weight_dropout=self._weight_dropout,
-                var_drop_in=self._var_drop_in,
-                var_drop_state=self._var_drop_state,
-                var_drop_out=self._var_drop_out)
+            self.encoder = self._get_encoder()
             self.decoder = self._get_decoder()
 
     def _get_embedding(self):
@@ -142,38 +136,10 @@ class SubwordRNN(SubwordNetwork, gluon.HybridBlock):
             embedding.add(gluon.nn.HybridLambda(lambda F, x: x.swapaxes(0, 1)))
         return embedding
 
-    @staticmethod  # TODO waiting for mxnet RNN HybdridBlock support
-    def _get_cell(*, mode, bidirectional, input_size, hidden_size,
-                  weight_dropout, var_drop_in, var_drop_state, var_drop_out):
-        cells = []  # Collect 1 or 2 cells depending on bidirectional
-        for i in range(1 if not bidirectional else 2):
-            if mode == 'rnn_relu':
-                cell = gluon.rnn.RNNCell(hidden_size, 'relu',
-                                         input_size=input_size)
-            elif mode == 'rnn_tanh':
-                cell = gluon.rnn.RNNCell(hidden_size, 'tanh',
-                                         input_size=input_size)
-            elif mode == 'lstm':
-                cell = gluon.rnn.LSTMCell(hidden_size, input_size=input_size)
-            elif mode == 'gru':
-                cell = gluon.rnn.GRUCell(hidden_size, input_size=input_size)
-
-            if var_drop_in + var_drop_state + var_drop_out != 0:
-                cell = gluon.contrib.rnn.VariationalDropoutCell(
-                    cell, var_drop_in, var_drop_state, var_drop_out)
-
-            if weight_dropout:
-                nlp.model.utils.apply_weight_drop(cell, 'h2h_weight',
-                                                  rate=weight_dropout)
-
-            cells.append(cell)
-
-        if bidirectional:
-            cell = gluon.rnn.BidirectionalCell(*cells)
-        else:
-            cell = cells[0]
-
-        return cell
+    def _get_encoder(self):
+        return nlp.model.utils._get_rnn_layer(
+            self._mode, self._num_layers, self._embed_size, self._hidden_size,
+            self._dropout, 0)
 
     def _get_decoder(self):
         output = gluon.nn.HybridSequential()
@@ -184,13 +150,16 @@ class SubwordRNN(SubwordNetwork, gluon.HybridBlock):
     def begin_state(self, *args, **kwargs):
         return self.encoder.begin_state(*args, **kwargs)
 
-    def hybrid_forward(self, F, inputs, mask, begin_state=None):  # pylint: disable=arguments-differ
+    def forward(self, inputs, mask, begin_state=None):
         """Defines the forward computation. Arguments can be either
         :py:class:`NDArray` or :py:class:`Symbol`."""
-        encoded = self.embedding(inputs)
-        encoded, states = self.cell.unroll(length=self._length, inputs=encoded,
-                                           begin_state=begin_state,
-                                           merge_outputs=True, layout='TNC')
+        F = mx.nd
+        embeddings = self.embedding(inputs)
+        if begin_state is None:
+            begin_state = self.begin_state(batch_size=embeddings.shape[1],
+                                           ctx=inputs.context)
+        encoded, states = self.encoder(embeddings, begin_state)
+
         if self._dropout:
             encoded = F.Dropout(encoded, p=self._dropout, axes=(0, ))
         out = self.decoder(encoded)

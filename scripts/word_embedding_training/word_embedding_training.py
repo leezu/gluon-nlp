@@ -137,25 +137,23 @@ def validate_args(args):
             sys.exit(1)
 
 
-class SubwordEmbeddings(gluon.HybridBlock):
-    def __init__(self, embedding_dim, length, subword_network, **kwargs):
+class SubwordEmbeddings(gluon.Block):
+    def __init__(self, embedding_dim, subword_network, **kwargs):
         super().__init__(**kwargs)
 
         self.embedding_dim = embedding_dim
-        self.length = length
 
         with self.name_scope():
             if 'rnn' in subword_network.lower():
                 self.subword = subword.create(
-                    name=subword_network, mode='lstm', length=length,
-                    embed_size=32, hidden_size=64, output_size=embedding_dim)
+                    name=subword_network, mode='lstm', embed_size=32,
+                    hidden_size=64, output_size=embedding_dim)
             else:
                 self.subword = subword.create(name=subword_network,
                                               embed_size=32,
                                               output_size=embedding_dim)
 
-    def hybrid_forward(self, F, token_bytes, mask):
-        # TODO add valid length mask for the subword time pool
+    def forward(self, token_bytes, mask):
         return self.subword(token_bytes, mask)
 
 
@@ -166,10 +164,8 @@ def get_model(args, train_dataset):
     num_tokens = train_dataset.num_tokens
 
     embedding_in = gluon.nn.SparseEmbedding(num_tokens, args.emsize)
-    subword_net = SubwordEmbeddings(
-        embedding_dim=args.emsize,
-        length=train_dataset.idx_to_subwordidxs.shape[1],
-        subword_network=args.subword_network)
+    subword_net = SubwordEmbeddings(embedding_dim=args.emsize,
+                                    subword_network=args.subword_network)
     embedding_out = gluon.nn.SparseEmbedding(num_tokens, args.emsize)
 
     context = utils.get_context(args)
