@@ -73,6 +73,20 @@ def np_unique(a):
     return np_unique_impl
 
 
+@numba.njit(nogil=True)
+def np_unique_wcounts(a):
+    b = np.sort(a.flatten())
+    unique = list(b[:1])
+    counts = [1 for _ in unique]
+    for x in b[1:]:
+        if x != unique[-1]:
+            unique.append(x)
+            counts.append(1)
+        else:
+            counts[-1] += 1
+    return np.array(unique), np.array(counts)
+
+
 ###############################################################################
 # Dataset / Samplers
 ###############################################################################
@@ -198,20 +212,25 @@ class SkipGramWordEmbeddingDataset(_WordEmbeddingDataset):
     def __getitem__(self, idx):
         # Make sure idx is of shape (batch_size,)
         idx = np.array(idx).flatten()
-        (source, target, label, unique_token_idxs,
-         unique_token_subwordsequences, mask) = _build_sg_batch(
+        (source, target, label, unique_sources_indices, unique_sources_counts,
+         unique_sources_subwordsequences, unique_sources_subwordsequences_mask,
+         unique_targets_indices, unique_targets_counts) = _build_sg_batch(
              self.coded, idx, self.window, self.negative,
              self._smoothed_token_freq_cumsum, self._sentence_boundaries,
              self.idx_to_subwordidxs, self.keep_max_size, self.min_size)
         source_subword = npi.remap(
-            source.flatten(), unique_token_idxs,
-            np.arange(unique_token_idxs.shape[0])).reshape(source.shape)
+            source.flatten(), unique_sources_indices,
+            np.arange(unique_sources_indices.shape[0])).reshape(source.shape)
         if len(idx) == 1:
-            return (source[0], target[0], label[0],
-                    unique_token_subwordsequences, source_subword[0], mask)
+            return (source[0], target[0], label[0], unique_sources_indices,
+                    unique_sources_counts, unique_sources_subwordsequences,
+                    source_subword[0], unique_sources_subwordsequences_mask,
+                    unique_targets_indices, unique_targets_counts)
         else:
-            return (source, target, label, unique_token_subwordsequences,
-                    source_subword, mask)
+            return (source, target, label, unique_sources_indices,
+                    unique_sources_counts, unique_sources_subwordsequences,
+                    source_subword, unique_sources_subwordsequences_mask,
+                    unique_targets_indices, unique_targets_counts)
 
 
 @numba.njit(nogil=True)
@@ -236,16 +255,20 @@ def _build_sg_batch(coded, idxs, window, negative, token_freq_cumsum,
         targets[i] = target
         labels[i] = label
 
-    # Find the subword information for all tokens included in the batch
-    unique_token_idxs = np.unique(sources)
-    unique_token_subwordsequences = idx_to_subwordidxs[
-        unique_token_idxs.astype(np.int32)]
+    # Find the subword information for all sources and counts for all
+    unique_sources_indices, unique_sources_counts = np_unique_wcounts(sources)
+    unique_sources_subwordsequences = idx_to_subwordidxs[
+        unique_sources_indices.astype(np.int32)]
+    (unique_sources_subwordsequences,
+     unique_sources_subwordsequences_mask) = _mask_2d(
+         unique_sources_subwordsequences, keep_max_size, min_size)
 
-    unique_token_subwordsequences, mask = _mask_2d(
-        unique_token_subwordsequences, keep_max_size, min_size)
+    unique_targets_indices, unique_targets_counts = np_unique_wcounts(targets)
 
-    return (sources, targets, labels, unique_token_idxs,
-            unique_token_subwordsequences, mask)
+    return (sources, targets, labels, unique_sources_indices,
+            unique_sources_counts, unique_sources_subwordsequences,
+            unique_sources_subwordsequences_mask, unique_targets_indices,
+            unique_targets_counts)
 
 
 @numba.njit(nogil=True)
@@ -378,5 +401,12 @@ def _build_sg_fasttext_batch(coded, idxs, window, negative, token_freq_cumsum,
         targets[i] = target
         labels[i] = label
 
-    source, mask = _mask_3d(sources, keep_max_size, min_size)
-    return sources, targets, labels, mask
+    # Perform counts before -1 padding entries are replaced by 0
+    _, unique_sources_counts = np_unique_wcounts(sources)
+    unique_sources_counts = unique_sources_counts[1:]  # Ignore padding count
+    _, unique_targets_counts = np_unique_wcounts(targets)
+
+    sources, mask = _mask_3d(sources, keep_max_size, min_size)
+
+    return (sources, targets, labels, mask, unique_sources_counts,
+            unique_targets_counts)

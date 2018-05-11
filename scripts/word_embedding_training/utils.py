@@ -45,18 +45,29 @@ def get_context(args):
     return context
 
 
-def train_embedding(args, param_data, param_grad, with_sparsity=False,
-                    last_update_buffer=None, current_update=None,
-                    lazy_update=True):
-    if args.dont_normalize_gradient or (param_grad is None):
+def train_embedding(args, param_data, param_grad, grad_normalization=None,
+                    with_sparsity=False, last_update_buffer=None,
+                    current_update=None, lazy_update=True):
+    if (not args.normalize_gradient
+            or args.normalize_gradient.lower() == 'none'
+            or (param_grad is None)):
         pass
-    elif (hasattr(mx.nd.sparse, 'l2_normalization')
-          and not args.force_py_op_normalize_gradient):
-        norm = mx.nd.sparse.sqrt(
-            mx.nd._internal._square_sum(param_grad, axis=1, keepdims=True))
-        mx.nd.sparse.l2_normalization(param_grad, norm, out=param_grad)
     else:
-        param_grad = mx.nd.Custom(param_grad, op_type='sparse_l2normalization')
+        if args.normalize_gradient.lower() == 'count':
+            assert grad_normalization is not None
+            norm = grad_normalization
+        elif args.normalize_gradient.lower() == 'l2':
+            norm = mx.nd.sparse.sqrt(
+                mx.nd._internal._square_sum(param_grad, axis=1, keepdims=True))
+        else:
+            raise NotImplementedError
+
+        if (hasattr(mx.nd.sparse, 'dense_division')
+                and not args.force_py_op_normalize_gradient):
+            mx.nd.sparse.dense_division(param_grad, norm, out=param_grad)
+        else:
+            param_grad = mx.nd.Custom(param_grad, norm,
+                                      op_type='dense_division')
 
     if with_sparsity:  # embedding_in
         assert current_update is not None

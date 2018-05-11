@@ -19,25 +19,31 @@
 import mxnet as mx
 
 
-class SparseL2Normalization(mx.operator.CustomOp):
+class SparseDenseDivision(mx.operator.CustomOp):
     '''Sparse L2Normalization operator.
     '''
 
     def forward(self, is_train, req, in_data, out_data, aux):
-        inp = in_data[0]
-        if inp.stype == 'row_sparse':
-            out = mx.nd.sparse.row_sparse_array(
-                (mx.nd.L2Normalization(inp.data), inp.indices),
-                shape=inp.shape)
+        lhs = in_data[0]
+        rhs = in_data[0]
+        if lhs.stype == 'row_sparse':
+            if rhs.stype == 'row_sparse':
+                # TODO
+                out_data = mx.nd.broadcast_div(lhs.data, rhs.data)
+            else:
+                out_data = mx.nd.broadcast_div(lhs.data, rhs)
+
+            out = mx.nd.sparse.row_sparse_array((out_data, lhs.indices),
+                                                shape=lhs.shape)
         else:
-            out = mx.nd.L2Normalization(inp)
+            out = mx.nd.broadcast_div(lhs, rhs)
         self.assign(out_data[0], req[0], out)
 
 
-@mx.operator.register('sparse_l2normalization')
-class SparseL2NormalizationProp(mx.operator.CustomOpProp):
+@mx.operator.register('dense_division')
+class SparseDenseDivisionProp(mx.operator.CustomOpProp):
     def __init__(self):
-        super(SparseL2NormalizationProp, self).__init__(need_top_grad=False)
+        super(SparseDenseDivisionProp, self).__init__(need_top_grad=False)
 
     def list_arguments(self):
         return ['data']
@@ -80,7 +86,7 @@ class SparseL2NormalizationProp(mx.operator.CustomOpProp):
         return ['row_sparse'], ['row_sparse'], ['row_sparse'], ['default'], []
 
     def create_operator(self, ctx, shapes, dtypes):
-        return SparseL2Normalization()
+        return SparseDenseDivision()
 
 
 if __name__ == '__main__':

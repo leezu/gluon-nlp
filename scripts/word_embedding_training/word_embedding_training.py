@@ -101,8 +101,9 @@ def get_args():
                              'If not specified, uses CPU.'))
     group.add_argument('--dont-hybridize', action='store_true',
                        help='Disable hybridization of gluon HybridBlocks.')
-    group.add_argument('--dont-normalize-gradient', action='store_true',
-                       help='L2 normalize word embedding gradients per word.')
+    group.add_argument('--normalize-gradient', type=str, default='count',
+                       help='Normalize the word embedding gradient row-wise. '
+                       'Supported are [None, count, L2].')
     group.add_argument(
         '--force-py-op-normalize-gradient', action='store_true',
         help='Always use Python sparse L2 normalization operator.')
@@ -226,9 +227,13 @@ def train(args):
 
         num_workers = math.ceil(mp.cpu_count() * 0.8)
         executor = ThreadPoolExecutor(max_workers=num_workers)
-        for i, (source, target, label,
-                unique_token_subwordsequences, source_subword, mask) in zip(
-                    t, executor.map(train_dataset.__getitem__, batches)):
+        for i, batch in zip(t, executor.map(train_dataset.__getitem__,
+                                            batches)):
+            (source, target, label, unique_sources_indices,
+             unique_sources_counts, unique_sources_subwordsequences,
+             source_subword, unique_sources_subwordsequences_mask,
+             unique_targets_indices, unique_targets_counts) = batch
+
             mx.nd.waitall()
 
             # Load data for training embedding matrix to context[0]
@@ -240,18 +245,20 @@ def train(args):
             source_subword = mx.nd.array(source_subword, ctx=context[0])
 
             # Split and load subword info to all GPUs for accelerated computation
-            assert unique_token_subwordsequences.shape == mask.shape
+            assert unique_sources_subwordsequences.shape == unique_sources_subwordsequences_mask.shape
             unique_token_subwordsequences = gluon.utils.split_and_load(
-                unique_token_subwordsequences, context, batch_axis=1,
+                unique_sources_subwordsequences, context, batch_axis=1,
                 even_split=False)
-            mask = gluon.utils.split_and_load(mask, context, batch_axis=1,
-                                              even_split=False)
+            unique_sources_subwordsequences_mask = gluon.utils.split_and_load(
+                unique_sources_subwordsequences_mask, context, batch_axis=1,
+                even_split=False)
 
             with mx.autograd.record():
                 # Compute subword embeddings from subword info (byte sequences)
                 subword_embedding_weights = []
                 for subwordsequences_ctx, mask_ctx in zip(
-                        unique_token_subwordsequences, mask):
+                        unique_token_subwordsequences,
+                        unique_sources_subwordsequences_mask):
                     subword_embedding_weights.append(
                         subword_net(subwordsequences_ctx,
                                     mask_ctx).as_in_context(context[0]))
@@ -279,14 +286,23 @@ def train(args):
             dense_trainer.step(batch_size=args.batch_size)
 
             # Training of sparse params
-            utils.train_embedding(args, embedding_in.weight.data(context[0]),
-                                  embedding_in.weight.grad(
-                                      context[0]), with_sparsity=True,
+            emb_in_grad_normalization = mx.nd.sparse.row_sparse_array(
+                (unique_sources_counts.reshape(
+                    (-1, 1)), unique_sources_indices), ctx=context[0],
+                dtype=np.float32)
+            utils.train_embedding(args, embedding_in.weight.data(
+                context[0]), embedding_in.weight.grad(
+                    context[0]), emb_in_grad_normalization, with_sparsity=True,
                                   last_update_buffer=last_update_buffer,
                                   current_update=current_update)
             current_update += 1
+            emb_out_grad_normalization = mx.nd.sparse.row_sparse_array(
+                (unique_targets_counts.reshape(
+                    (-1, 1)), unique_targets_indices), ctx=context[0],
+                dtype=np.float32)
             utils.train_embedding(args, embedding_out.weight.data(context[0]),
-                                  embedding_out.weight.grad(context[0]))
+                                  embedding_out.weight.grad(context[0]),
+                                  emb_out_grad_normalization)
 
             if i % args.eval_interval == 0:
                 eval_dict = evaluation.evaluate(
@@ -321,7 +337,7 @@ if __name__ == '__main__':
     logging.basicConfig()
     logging.getLogger().setLevel(logging.INFO)
 
-    if not hasattr(mx.nd.sparse, 'l2_normalization'):
+    if not hasattr(mx.nd.sparse, 'dense_division'):
         logging.warning('Mxnet version is not compiled with '
                         'sparse l2_normalization support. '
                         ' Using slow Python implementation.')
