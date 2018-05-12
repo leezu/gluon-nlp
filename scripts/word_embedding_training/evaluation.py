@@ -194,7 +194,7 @@ def evaluate_num_zero_rows(args, embedding_in, eps=1E-5):
         mx.cpu()).data
     embedding_norm = mx.nd.norm(token_idx_to_vec, axis=1)
     num_zero_rows = mx.nd.sum(embedding_norm < eps).asscalar()
-    return num_zero_rows
+    return num_zero_rows, embedding_norm.shape[0]
 
 
 def evaluate(args, embedding_in, subword_net, vocab, subword_vocab):
@@ -220,6 +220,10 @@ def evaluate(args, embedding_in, subword_net, vocab, subword_vocab):
                 sr_correlation += result
     sr_correlation /= len(args.similarity_datasets)
 
-    num_zero_rows = evaluate_num_zero_rows(args, embedding_in)
+    num_zero_rows, num_total_rows = evaluate_num_zero_rows(args, embedding_in)
 
-    return {'SpearmanR': sr_correlation, 'NumZeroRows': num_zero_rows}
+    return {
+        'SpearmanR': sr_correlation,
+        'Zero': num_zero_rows / num_total_rows,
+        'Total': num_total_rows,
+    }

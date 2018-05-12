@@ -286,15 +286,20 @@ def train(args):
             dense_trainer.step(batch_size=args.batch_size)
 
             # Training of sparse params
+            if i % args.eval_interval == 0:
+                lazy_update = False  # Force eager update before evaluation
+            else:
+                lazy_update = True
             emb_in_grad_normalization = mx.nd.sparse.row_sparse_array(
                 (unique_sources_counts.reshape(
                     (-1, 1)), unique_sources_indices), ctx=context[0],
                 dtype=np.float32)
-            utils.train_embedding(args, embedding_in.weight.data(
-                context[0]), embedding_in.weight.grad(
+            utils.train_embedding(
+                args, embedding_in.weight.data(context[0]),
+                embedding_in.weight.grad(
                     context[0]), emb_in_grad_normalization, with_sparsity=True,
-                                  last_update_buffer=last_update_buffer,
-                                  current_update=current_update)
+                last_update_buffer=last_update_buffer,
+                current_update=current_update, lazy_update=lazy_update)
             current_update += 1
             emb_out_grad_normalization = mx.nd.sparse.row_sparse_array(
                 (unique_targets_counts.reshape(
@@ -321,13 +326,6 @@ def train(args):
                             mx.cpu()).tostype("default").norm(
                                 axis=1).mean().asscalar(),
                     **eval_dict)
-
-        # Force eager gradient update at end of every epoch
-        utils.train_embedding(args, param_grad=None, with_sparsity=True,
-                              last_update_buffer=last_update_buffer,
-                              current_update=current_update, lazy_update=False,
-                              param_data=embedding_in.weight.data(context[0]))
-        current_update += 1
 
         # Shut down ThreadPoolExecutor
         executor.shutdown()
