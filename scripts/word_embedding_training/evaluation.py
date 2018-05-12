@@ -40,79 +40,100 @@ def construct_vocab_embedding_for_dataset(args, tokens, vocab, embedding_in,
     '''Precompute the token embeddings for all the words in the vocabulary'''
     assert len(tokens) == len(set(tokens)), 'tokens contains duplicates.'
 
-    known_tokens = []
     context = utils.get_context(args)
     token_subword_embeddings = []
+
+    known_tokens = []
+    known_tokens_subwordindices = []
+    token_mask = []
+
     if subword_vocab is not None:
         words_subword_indices = subword_vocab.words_to_subwordindices(tokens)
+
+        # Collect tokens for which either word or subword embeddings are known
         for token, subword_indices in zip(tokens, words_subword_indices):
-            subword_indices_nd = mx.nd.array(subword_indices, ctx=context[0])
-
             # If no subwords are associated with this token
-            if not sum(subword_indices_nd.shape):
-                # If token is also not in vocabulary
-                if token not in vocab:
-                    continue
-                else:
-                    known_tokens.append(token)
-                    token_subword_embeddings.append(
-                        mx.nd.zeros((1, embedding_in.weight.shape[1]),
-                                    ctx=context[0]))
-                    continue
-
-            if subword_net is not None:
-                # Add batch dimension and infer token_subword_embedding
-                subword_indices_nd = mx.nd.expand_dims(subword_indices_nd, 0)
-                mask = mx.nd.ones_like(subword_indices_nd)
-                if subword_indices_nd.shape[1] < subword_net.subword.min_size:
-                    missing = (subword_net.subword.min_size -
-                               subword_indices_nd.shape[1])
-                    subword_indices_nd = mx.nd.concat(
-                        subword_indices_nd,
-                        mx.nd.zeros((1, missing),
-                                    ctx=subword_indices_nd.context))
-                    mask = mx.nd.concat(mask,
-                                        mx.nd.zeros((1, missing),
-                                                    ctx=mask.context))
-                token_subword_embedding = subword_net(subword_indices_nd, mask)
-                token_subword_embeddings.append(token_subword_embedding)
-            else:  # Subword indices should be applicable for embedding_in
-                subword_embeddings = embedding_in(subword_indices_nd)
-                token_subword_embedding = mx.nd.sum(subword_embeddings, axis=0)
-                token_subword_embedding = mx.nd.expand_dims(
-                    token_subword_embedding, 0)
-                token_subword_embeddings.append(token_subword_embedding)
+            if not len(subword_indices) and token not in vocab:
+                continue
 
             known_tokens.append(token)
+            # subword_indices may be empty list
+            known_tokens_subwordindices.append(subword_indices)
+
+            if token in vocab:
+                token_mask.append(1)
+            else:
+                token_mask.append(0)
+
+        # Compute embeddings based on subword units
+        # 1. Create batch and mask for padding
+        max_num_subwords = max(len(s) for s in known_tokens_subwordindices)
+        assert max_num_subwords > subword_net.subword.min_size, \
+            'All words have less subwords then the required minimum length. '\
+            'Looks like a bug.'  # Check git blame to find padding code
+        known_tokens_subwordindices_np = np.zeros(
+            (len(known_tokens_subwordindices), max_num_subwords))
+        known_tokens_subwordindices_mask_np = np.zeros(
+            (len(known_tokens_subwordindices), max_num_subwords))
+        for i, subword_indices in enumerate(known_tokens_subwordindices):
+            if not len(subword_indices):
+                continue
+            known_tokens_subwordindices_np[i, :len(subword_indices)] = \
+                subword_indices
+            known_tokens_subwordindices_mask_np[i, :len(subword_indices)] = 1
+
+        # 2. Copy to device
+        known_tokens_subword_indices_nd = mx.nd.array(
+            known_tokens_subwordindices_np, ctx=context[0])
+        known_tokens_subword_indices_mask_nd = mx.nd.array(
+            known_tokens_subwordindices_mask_np, ctx=context[0])
+
+        # 3. Compute
+        if subword_net is not None:
+            token_subword_embeddings = subword_net(
+                known_tokens_subword_indices_nd,
+                known_tokens_subword_indices_mask_nd)
+        else:  # Subword indices should be applicable for embedding_in
+            subword_embeddings = embedding_in(known_tokens_subword_indices_nd)
+            masked_subword_embeddings = mx.nd.broadcast_mul(
+                subword_embeddings, known_tokens_subword_indices_mask_nd)
+            token_subword_embeddings = mx.nd.sum(masked_subword_embeddings,
+                                                 axis=-2)
+
     else:
         assert subword_net is None, \
             'If subword_net is supplied, ' \
             'also a subword_vocab needs to be specified.'
+        for token in tokens:
+            if token in vocab:
+                known_tokens.append(token)
+                token_mask.append(1)
+            else:
+                # As we don't have a subword_vocab, we can't handle tokens that
+                # are not in the vocab and skip them
+                continue
 
-    # Get token embeddings from embedding_in
+    # Compute result token_to_idx map
     token_to_idx = {token: i for i, token in enumerate(known_tokens)}
-    token_embeddings = []
-    for token in known_tokens:
-        if token in vocab:
-            token_embedding = embedding_in(
-                mx.nd.array([vocab.to_indices(token)], ctx=context[0]))
-            token_embeddings.append(token_embedding)
-        else:
-            token_embeddings.append(
-                mx.nd.zeros((1, embedding_in.weight.shape[1]), ctx=context[0]))
+
+    # Look up token embeddings from embedding_in
+    known_token_idx = [
+        vocab.to_indices(t) if t in vocab else 0 for t in known_tokens
+    ]
+    known_token_idx_nd = mx.nd.array(known_token_idx, ctx=context[0])
+    known_token_idx_mask_nd = mx.nd.array(token_mask, ctx=context[0]) \
+                                   .expand_dims(-1)
+    unmasked_token_embeddings = embedding_in(known_token_idx_nd)
+    token_embeddings = mx.nd.broadcast_mul(unmasked_token_embeddings,
+                                           known_token_idx_mask_nd)
 
     # Combine subword and word level embeddings
-    if token_subword_embeddings:
-        assert token_embeddings[0].shape == \
-            token_subword_embeddings[0].shape
-        embeddings = mx.nd.concat(*token_embeddings, dim=0) + \
-            mx.nd.concat(*token_subword_embeddings, dim=0)
-    elif token_embeddings:
-        assert len(token_embeddings[0].shape) == 2
-        embeddings = mx.nd.concat(*token_embeddings, dim=0)
+    if subword_vocab is not None:
+        assert token_embeddings.shape == \
+            token_subword_embeddings.shape
+        embeddings = token_embeddings + token_subword_embeddings
     else:
-        # Didn't get any embeddings
-        embeddings = mx.nd.array([], ctx=context[0])
+        embeddings = token_embeddings
 
     return token_to_idx, embeddings
 
