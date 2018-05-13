@@ -28,18 +28,19 @@ import logging
 import math
 import multiprocessing as mp
 import sys
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 
 import mxnet as mx
 import numpy as np
+from mxboard import SummaryWriter
 from mxnet import gluon
-
-import fasttext
-import gluonnlp as nlp
-import subword
 
 import data
 import evaluation
+import fasttext
+import gluonnlp as nlp
+import subword
 import utils
 
 try:
@@ -110,9 +111,10 @@ def get_args():
 
     # Logging options
     group = parser.add_argument_group('Logging arguments')
-    group.add_argument(
-        '--log', type=str, default='results.csv', help='Path to logfile.'
-        'Results of evaluation runs are written to there in a CSV format.')
+    group.add_argument('--logdir', type=str, default=None,
+                       help='Directory to store logs in.'
+                       'Tensorboard compatible logs are stored there. '
+                       'Defaults to a random directory in ./logs')
 
     args = parser.parse_args()
 
@@ -136,6 +138,15 @@ def validate_args(args):
                 nlp.data.word_embedding_evaluation.word_similarity_datasets):
             print('{} is not a supported dataset.'.format(dataset_name))
             sys.exit(1)
+
+
+def setup_logging(args):
+    """Set up the logging directory."""
+
+    if not args.logdir:
+        args.logdir = tempfile.mkdtemp(dir='./logs')
+
+    logging.info('Logging to {}'.format(args.logdir))
 
 
 class SubwordEmbeddings(gluon.Block):
@@ -211,6 +222,9 @@ def train(args):
     last_update_buffer = mx.nd.zeros((train_dataset.num_tokens, ),
                                      ctx=context[0])
     current_update = 1
+
+    # Logging writer
+    sw = SummaryWriter(logdir=args.logdir)
 
     indices = np.arange(len(train_dataset))
     for epoch in range(args.epochs):
@@ -312,23 +326,40 @@ def train(args):
             if i % args.eval_interval == 0:
                 eval_dict = evaluation.evaluate(
                     args, embedding_in, subword_net, vocab, subword_vocab)
+                t.set_postfix(**eval_dict)
 
-                t.set_postfix(
-                    # TODO print number of grad norm > 0
-                    loss=loss.sum().asscalar(),
-                    grad=embedding_in.weight.grad(context[0]).as_in_context(
-                        mx.cpu()).norm().asscalar(),
-                    dense_grad=sum(
-                        p.grad(ctx=context[0]).norm()
-                        for p in dense_params).asscalar(),
-                    data=embedding_in.weight.data(
-                        ctx=context[0]).as_in_context(
-                            mx.cpu()).tostype("default").norm(
-                                axis=1).mean().asscalar(),
-                    **eval_dict)
+                # Mxboard
+                # Histogram
+                embedding_in_norm = embedding_in.weight.data(
+                    ctx=context[0]).as_in_context(
+                        mx.cpu()).tostype("default").norm(axis=1)
+                sw.add_histogram(tag='embedding_in_norm',
+                                 values=embedding_in_norm,
+                                 global_step=current_update, bins=200)
+                embedding_in_grad = embedding_in.weight.grad(
+                    ctx=context[0]).as_in_context(
+                        mx.cpu()).tostype("default").norm(axis=1)
+                sw.add_histogram(tag='embedding_in_grad',
+                                 values=embedding_in_grad,
+                                 global_step=current_update, bins=200)
+                embedding_out_norm = embedding_in.weight.data(
+                    ctx=context[0]).as_in_context(
+                        mx.cpu()).tostype("default").norm(axis=1)
+                sw.add_histogram(tag='embedding_out_norm',
+                                 values=embedding_out_norm,
+                                 global_step=current_update, bins=200)
+
+                # Scalars
+                sw.add_scalar(tag='loss', value=loss.mean().asscalar(),
+                              global_step=current_update)
+                for k, v in eval_dict.items():
+                    sw.add_scalar(tag=k, value=float(v),
+                                  global_step=current_update)
 
         # Shut down ThreadPoolExecutor
         executor.shutdown()
+
+    sw.close()
 
 
 if __name__ == '__main__':
@@ -342,6 +373,7 @@ if __name__ == '__main__':
 
     args_ = get_args()
     validate_args(args_)
+    setup_logging(args_)
 
     if not args_.subword_network == 'fasttext':
         train(args_)
