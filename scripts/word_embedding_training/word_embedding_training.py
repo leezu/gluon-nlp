@@ -63,7 +63,7 @@ def get_args():
                        help='Don\'t use any token embedding. '
                        'Only use subword units.')
     group.add_argument(
-        '--subword-network', type=str, default='SubwordCNN',
+        '--subword-network', type=str, default='', nargs='?',
         help=('Network architecture to infer subword level embeddings. ' +
               str(subword.list_subwordnetworks()) +
               ' , fasttext or empty to disable'))
