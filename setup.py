@@ -60,6 +60,7 @@ setup(
         ],
         'dev': [
             'pytest',
+            'pytest-xdist',
             'recommonmark',
             'sphinx-gallery',
             'sphinx_rtd_theme',
