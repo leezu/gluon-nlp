@@ -31,6 +31,7 @@ VERSION = find_version('gluonnlp', '__init__.py')
 requirements = [
     'numpy',
     'numpy_indexed',
+    'boto3',
 ]
 
 setup(

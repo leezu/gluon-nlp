@@ -21,7 +21,7 @@
 """Word embedding training datasetst."""
 
 __all__ = [
-    'Text8', 'SkipGramWordEmbeddingDataset',
+    'Text8', 'Wikipedia', 'SkipGramWordEmbeddingDataset',
     'SkipGramFasttextWordEmbeddingDataset'
 ]
 
@@ -34,6 +34,7 @@ import numpy as np
 import numpy_indexed as npi
 from mxnet.gluon.data.dataset import Dataset
 from mxnet.gluon.utils import check_sha1, download
+from .utils import _get_home_dir
 
 from .dataset import CorpusDataset
 
@@ -120,7 +121,7 @@ class _Hutter(CorpusDataset):
 
 
 class Text8(_Hutter):
-    def __init__(self, root=os.path.join('~', '.mxnet', 'datasets', 'text8'),
+    def __init__(self, root=os.path.join(_get_home_dir(), 'datasets', 'text8'),
                  segment='train', seq_len=None, bos=None, eos=None, pad=None):
         self._archive_file = ('text8.zip',
                               '6c70299b93b7e1f927b42cd8f6ac1a31547c7a2e')
@@ -129,6 +130,32 @@ class Text8(_Hutter):
         }
         self._segment = segment
         super(Text8, self).__init__(root, 'text8', seq_len, bos, eos, pad)
+
+
+class Wikipedia(CorpusDataset):
+    def __init__(self, date, language, root=os.path.join(
+            _get_home_dir(), 'datasets', 'wikimedia')):
+        root = os.path.expanduser(root)
+        if not os.path.isdir(root):
+            os.makedirs(root)
+        self._root = root
+        self._s3_bucket = 'lllausen-data'
+        self._s3_key = 'datasets/wikimedia/{}/wiki.{}.txt'
+        self.date = date
+        self.language = language
+        super(Wikipedia, self).__init__(self._get_data())
+
+    def _get_data(self):
+        data_file_name = 'wiki.{}.txt'.format(self.language)
+        root = self._root
+        path = os.path.join(root, data_file_name)
+        # TODO(leezu): Publish the file hash together with the dataset on S3 and check
+        if not os.path.exists(path):
+            import boto3
+            s3 = boto3.resource('s3')
+            s3.Bucket(self._s3_bucket).download_file(
+                self._s3_key.format(self.date, self.language), path)
+        return path
 
 
 class _WordEmbeddingDataset(Dataset):

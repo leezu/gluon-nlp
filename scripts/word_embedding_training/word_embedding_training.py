@@ -80,8 +80,6 @@ def get_args():
     group.add_argument('--eval-interval', type=int, default=100,
                        help='evaluation interval')
     ## Datasets
-    group.add_argument('--train-dataset', type=str, default='Text8',
-                       help='Training corpus. [\'Text8\', \'Test\']')
     group.add_argument(
         '--similarity-datasets', type=str,
         default=nlp.data.word_embedding_evaluation.word_similarity_datasets,
@@ -127,8 +125,9 @@ def get_args():
                        'Tensorboard compatible logs are stored there. '
                        'Defaults to a random directory in ./logs')
 
-    # Add subword specific args
+    # Add further argument groups
     subword.add_subword_parameters_to_parser(parser)
+    data.add_parameters(parser)
 
     args = parser.parse_args()
 

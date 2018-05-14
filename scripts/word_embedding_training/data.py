@@ -40,6 +40,31 @@ except ImportError:
                     'for faster data preprocessing.')
 
 
+###############################################################################
+# Hyperparameters
+###############################################################################
+def add_parameters(parser):
+    group = parser.add_argument_group('Dataset parameters')
+    group.add_argument('--train-dataset', type=str, default='Text8',
+                       help='Training corpus. '
+                       '[\'Text8\', \'Test\', \'Wikipedia\']')
+
+    # Text8 arguments
+    pass
+
+    # Wikipedia arguments
+    group.add_argument(
+        '--wikipedia-date', type=str, default='auto',
+        help='Version of wikipedia dataset to use. '
+        'Auto chooses the most recent version.'
+        'Manual specification in format YYYYMMDD, e.g. 20180514.')
+    group.add_argument('--wikipedia-language', type=str, default='en',
+                       help='Language of wikipedia dataset to use. ')
+
+
+###############################################################################
+# Data helpers
+###############################################################################
 def token_to_index(serialized_sentences, vocab):
     sentences = json.loads(serialized_sentences)
     coded = [
@@ -50,18 +75,18 @@ def token_to_index(serialized_sentences, vocab):
 
 
 def _get_sentence_corpus(args):
-    # TODO currently only supports skipgram and a single dataset
-    # → Add Text8 Dataset to the toolkit
     with utils.print_time('read dataset to memory'):
-        sentences = nlp.data.Text8(segment='train')
-
-    # TODO Test code
-    if args.train_dataset == 'Test':
-        sentences = [sentences[0][:1000]]
-    elif args.train_dataset == 'Text8':
-        pass
-    else:
-        raise RuntimeError('Unknown dataset.')
+        # TODO(leezu) Remove this Test dataset
+        if args.train_dataset.lower() == 'test':
+            sentences = nlp.data.Text8(segment='train')
+            sentences = [sentences[0][:1000]]
+        elif args.train_dataset.lower() == 'text8':
+            sentences = nlp.data.Text8(segment='train')
+        elif args.train_dataset.lower() == 'wikipedia':
+            sentences = nlp.data.Wikipedia(date=args.wikipedia_date,
+                                           language=args.wikipedia_language)
+        else:
+            raise RuntimeError('Unknown dataset.')
 
     return sentences
 
@@ -84,8 +109,9 @@ def _preprocess_sentences(sentences):
                             for i in range(0, len(sentences[0]), size)]
     else:
         size = math.ceil(len(sentences) / num_workers)
-        worker_sentences = [[sentences[i:i + size]]
-                            for i in range(0, len(sentences), size)]
+        worker_sentences = [
+            sentences[i:i + size] for i in range(0, len(sentences), size)
+        ]
 
     worker_sentences = [json.dumps(s) for s in worker_sentences]
     with mp.Pool(processes=num_workers) as pool:
@@ -160,6 +186,7 @@ def _get_train_dataset(args, vocab, coded):
 
 
 def get_train_data(args):
+    # TODO currently only supports skipgram
     sentences = _get_sentence_corpus(args)
     vocab, coded = _preprocess_sentences(sentences)
     data = _get_train_dataset(args, vocab, coded)
