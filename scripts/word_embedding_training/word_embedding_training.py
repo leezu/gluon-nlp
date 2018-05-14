@@ -98,8 +98,6 @@ def get_args():
                        help='Batch size for training.')
     group.add_argument('--sparsity-lambda', type=float, default=0.01,
                        help='Initial learning rate')
-    group.add_argument('--lr', type=float, default=0.1,
-                       help='Initial learning rate')
     group.add_argument('--epochs', type=int, default=5, help='Epoch limit')
     group.add_argument('--gpu', type=int, nargs='+',
                        help=('Number (index) of GPU to run on, e.g. 0. '
@@ -113,6 +111,14 @@ def get_args():
         '--force-py-op-normalize-gradient', action='store_true',
         help='Always use Python sparse L2 normalization operator.')
 
+    # Optimization options
+    group = parser.add_argument_group('Optimization arguments')
+    group.add_argument('--embeddings-lr', type=float, default=0.1,
+                       help='Learning rate for embeddings matrix.')
+    group.add_argument('--dense-lr', type=float, default=0.02,
+                       help='Learning rate for subword embedding network.')
+    group.add_argument('--dense-momentum', type=float, default=0.9,
+                       help='Momentum for subword embedding network.')
     # Logging options
     group = parser.add_argument_group('Logging arguments')
     group.add_argument('--logdir', type=str, default=None,
@@ -234,8 +240,8 @@ def train(args):
     dense_params = list(subword_net.collect_params().values())
 
     dense_trainer = gluon.Trainer(dense_params, 'sgd', {
-        'learning_rate': args.lr,
-        'momentum': 0.1
+        'learning_rate': args.dense_lr,
+        'momentum': args.dense_momentum
     })
 
     # Auxilary states for group lasso objective

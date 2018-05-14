@@ -80,7 +80,7 @@ def train_embedding(args, param_data, param_grad, grad_normalization=None,
 
         mx.nd.sparse.sgd_update(weight=param_data, grad=param_grad,
                                 last_update_buffer=last_update_buffer,
-                                lr=args.lr, sparsity=args.sparsity_lambda,
+                                lr=args.embeddings_lr, sparsity=args.sparsity_lambda,
                                 current_update=current_update, out=param_data,
                                 lazy_update=lazy_update)
     else:
@@ -88,5 +88,5 @@ def train_embedding(args, param_data, param_grad, grad_normalization=None,
         mx.nd.sparse.sgd_update(
             weight=param_data, grad=param_grad, last_update_buffer=mx.nd.zeros(
                 param_data.shape,
-                ctx=param_data.context), lr=args.lr, sparsity=0,
+                ctx=param_data.context), lr=args.embeddings_lr, sparsity=0,
             current_update=0, out=param_data, lazy_update=lazy_update)

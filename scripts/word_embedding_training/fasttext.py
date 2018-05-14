@@ -153,7 +153,7 @@ def train(args):
             weight=param_data, grad=mx.nd.sparse.row_sparse_array(
                 param_data.shape,
                 ctx=context[0]), last_update_buffer=last_update_buffer,
-            lr=args.lr, sparsity=args.sparsity_lambda,
+            lr=args.embeddings_lr, sparsity=args.sparsity_lambda,
             current_update=current_update, out=param_data)
         current_update += 1
 
