@@ -343,10 +343,6 @@ def train(args):
             current_update += 1
 
             if i % args.eval_interval == 0:
-                eval_dict = evaluation.evaluate(
-                    args, embedding_in, subword_net, vocab, subword_vocab)
-                t.set_postfix(**eval_dict)
-
                 # Mxboard
                 # Histogram
                 if embedding_in is not None:
@@ -386,6 +382,9 @@ def train(args):
                 # Scalars
                 sw.add_scalar(tag='loss', value=loss.mean().asscalar(),
                               global_step=current_update)
+ 
+                eval_dict = evaluation.evaluate(
+                    args, embedding_in, subword_net, vocab, subword_vocab, sw)
                 for k, v in eval_dict.items():
                     sw.add_scalar(tag=k, value=float(v),
                                   global_step=current_update)

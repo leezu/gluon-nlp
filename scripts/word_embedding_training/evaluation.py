@@ -159,8 +159,14 @@ def _filter_similarity_dataset(token_to_idx, dataset):
 
 
 def evaluate_similarity(args, vocab, subword_vocab, embedding_in, subword_net,
-                        dataset, similarity_function='CosineSimilarity'):
+                        dataset_name, dataset_kwargs,
+                        similarity_function='CosineSimilarity',
+                        mxboard_summary_writer=None):
     """Evaluation on similarity task."""
+    dataset = nlp.data.create(dataset_name, **dataset_kwargs)
+    dataset_name_wkwargs = dataset_name + ','.join(
+        "{!s}={!r}".format(k, v) for (k, v) in dataset_kwargs.items())
+
     tokens = set(itertools.chain.from_iterable((d[0], d[1]) for d in dataset))
     tokens = list(tokens)
 
@@ -171,9 +177,17 @@ def evaluate_similarity(args, vocab, subword_vocab, embedding_in, subword_net,
     dataset_coded = [[token_to_idx[d[0]], token_to_idx[d[1]], d[2]]
                      for d in dataset]
 
+    if mxboard_summary_writer is not None:
+        idx_to_token = [
+            x[0] for x in sorted(token_to_idx.items(), key=lambda x: x[1])
+        ]
+        mxboard_summary_writer.add_embedding(
+            tag='similarity-{}'.format(dataset_name_wkwargs),
+            embedding=idx_to_vec, labels=idx_to_token)
+
     if not dataset_coded:
         logging.info('Dataset {} contains only OOV. Skipping.'.format(
-            dataset.__class__.__name__))
+            dataset_name_wkwargs))
         return 0, 0
 
     # Evaluate
@@ -204,8 +218,9 @@ def evaluate_num_zero_rows(args, embedding_in, eps=1E-5):
     return num_zero_rows, embedding_norm.shape[0]
 
 
-def evaluate(args, embedding_in, subword_net, vocab, subword_vocab):
-    sr_correlation = 0
+def evaluate(args, embedding_in, subword_net, vocab, subword_vocab,
+             mxboard_summary_writer=None):
+    eval_dict = {}
     for dataset_name in args.similarity_datasets:
         if stats is None:
             raise RuntimeError(
@@ -215,26 +230,30 @@ def evaluate(args, embedding_in, subword_net, vocab, subword_vocab):
         logging.debug('Starting evaluation of %s', dataset_name)
         parameters = nlp.data.list_datasets(dataset_name)
         for key_values in itertools.product(*parameters.values()):
-            kwargs = dict(zip(parameters.keys(), key_values))
-            logging.debug('Evaluating with %s', kwargs)
+            dataset_kwargs = dict(zip(parameters.keys(), key_values))
+            logging.debug('Evaluating with %s', dataset_kwargs)
 
-            dataset = nlp.data.create(dataset_name, **kwargs)
             for similarity_function in args.similarity_functions:
                 logging.debug('Evaluating with  %s', similarity_function)
-                result, num_samples = evaluate_similarity(
+                result, num_words = evaluate_similarity(
                     args, vocab, subword_vocab, embedding_in, subword_net,
-                    dataset, similarity_function)
-                sr_correlation += result
-    sr_correlation /= len(args.similarity_datasets)
+                    dataset_name, dataset_kwargs, similarity_function,
+                    mxboard_summary_writer)
+                dataset_name_wkwargs = dataset_name + ','.join(
+                    "{!s}={!r}".format(k, v)
+                    for (k, v) in dataset_kwargs.items())
+                eval_dict['similarity-sr-' + dataset_name_wkwargs] = result
+                eval_dict['similarity-numwords--'
+                          + dataset_name_wkwargs] = num_words
 
     if embedding_in is not None:
         num_zero_rows, num_total_rows = evaluate_num_zero_rows(
             args, embedding_in)
         return {
-            'SpearmanR': sr_correlation,
             'Zero': num_zero_rows / num_total_rows,
             'Total': num_total_rows,
+            **eval_dict
         }
 
     else:
-        return {'SpearmanR': sr_correlation}
+        return eval_dict
