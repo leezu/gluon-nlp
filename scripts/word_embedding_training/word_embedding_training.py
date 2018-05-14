@@ -401,6 +401,8 @@ def train(args):
                     sw.add_scalar(tag=k, value=float(v),
                                   global_step=current_update)
 
+                sw.flush()
+
         # Shut down ThreadPoolExecutor
         executor.shutdown()
 
