@@ -220,12 +220,12 @@ def train(args):
         args, train_dataset)
     context = utils.get_context(args)
 
-    dense_params = list(subword_net.collect_params().values())
-
-    dense_trainer = gluon.Trainer(dense_params, 'sgd', {
-        'learning_rate': args.dense_lr,
-        'momentum': args.dense_momentum
-    })
+    if subword_net is not None:
+        dense_params = list(subword_net.collect_params().values())
+        dense_trainer = gluon.Trainer(dense_params, 'sgd', {
+            'learning_rate': args.dense_lr,
+            'momentum': args.dense_momentum
+        })
 
     # Auxilary states for group lasso objective
     last_update_buffer = mx.nd.zeros((train_dataset.num_tokens, ),
@@ -298,7 +298,10 @@ def train(args):
                 # Look up token embeddings of batch
                 if embedding_in is not None:
                     word_embeddings = embedding_in(source)
-                    emb_in = subword_embeddings + word_embeddings
+                    if subword_net is not None:
+                        emb_in = subword_embeddings + word_embeddings
+                    else:
+                        emb_in = word_embeddings
                 else:
                     assert subword_net is not None
                     emb_in = subword_embeddings
@@ -382,7 +385,7 @@ def train(args):
                 # Scalars
                 sw.add_scalar(tag='loss', value=loss.mean().asscalar(),
                               global_step=current_update)
- 
+
                 eval_dict = evaluation.evaluate(
                     args, embedding_in, subword_net, vocab, subword_vocab, sw)
                 for k, v in eval_dict.items():

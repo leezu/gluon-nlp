@@ -120,6 +120,11 @@ def _get_train_dataset(args, vocab, coded):
     # Get index to byte mapping from vocab
 
     if args.objective.lower() == 'skipgram':
+        # TODO: Enable SkipGramWordEmbeddingDataset without subword_vocab
+        # if not args.subword_network.lower():
+        #     subword_vocab = None
+        #     dataset = nlp.data.SkipGramWordEmbeddingDataset(
+        #         coded, idx_to_counts)
         if args.subword_network.lower() != 'fasttext':
             subword_function = nlp.vocab.create('ByteSubwords')
             subword_vocab = nlp.SubwordVocab(idx_to_token=vocab.idx_to_token,
@@ -127,10 +132,17 @@ def _get_train_dataset(args, vocab, coded):
                                              merge_indices=False)
 
             # Get subword network data requirements
-            min_size = subword.list_subwordnetworks(
-                args.subword_network).min_size
+            if args.subword_network:
+                min_size = subword.list_subwordnetworks(
+                    args.subword_network).min_size
+            else:
+                min_size = 1
             dataset = nlp.data.SkipGramWordEmbeddingDataset(
                 coded, idx_to_counts, subword_vocab, min_size=min_size)
+            # TODO: Enable SkipGramWordEmbeddingDataset without subword_vocab
+            # As a workaround, set subword_vocab to None here
+            if not args.subword_network.lower():
+                subword_vocab = None
         else:  # Optimized fasttext data iterator for fasttext
             subword_function = nlp.vocab.create(
                 'NGramSubwords', vocabulary=vocab, ngrams=[3, 4, 5, 6],
