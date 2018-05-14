@@ -25,18 +25,24 @@ __all__ = [
     'SkipGramFasttextWordEmbeddingDataset'
 ]
 
+import io
 import os
 import shutil
 import zipfile
+import concurrent.futures
+import functools
+import pyarrow as pa
+import pandas as pd
 
-import numba
 import numpy as np
 import numpy_indexed as npi
 from mxnet.gluon.data.dataset import Dataset
 from mxnet.gluon.utils import check_sha1, download
-from .utils import _get_home_dir
+
+import numba
 
 from .dataset import CorpusDataset
+from .utils import _get_home_dir, concat_sequence
 
 
 ###############################################################################
@@ -133,28 +139,33 @@ class Text8(_Hutter):
 
 
 class Wikipedia(CorpusDataset):
+    num_files = 100  # By convention we split the corpus to 100 files
+    _s3_bucket = 'lllausen-data'
+    _s3_key = 'datasets/wikimedia/{}/wiki.{}/{}'
+
     def __init__(self, date, language, root=os.path.join(
-            _get_home_dir(), 'datasets', 'wikimedia')):
+            _get_home_dir(), 'datasets', 'wikimedia'), i=None):
         root = os.path.expanduser(root)
         if not os.path.isdir(root):
             os.makedirs(root)
         self._root = root
-        self._s3_bucket = 'lllausen-data'
-        self._s3_key = 'datasets/wikimedia/{}/wiki.{}.txt'
+        self.i = i
         self.date = date
         self.language = language
         super(Wikipedia, self).__init__(self._get_data())
 
     def _get_data(self):
-        data_file_name = 'wiki.{}.txt'.format(self.language)
+        folder_name = 'wiki.{}'.format(self.language)
+        data_file_name = format(self.i, '02d')
         root = self._root
-        path = os.path.join(root, data_file_name)
+        path = os.path.join(root, folder_name, data_file_name)
+
         # TODO(leezu): Publish the file hash together with the dataset on S3 and check
         if not os.path.exists(path):
             import boto3
             s3 = boto3.resource('s3')
-            s3.Bucket(self._s3_bucket).download_file(
-                self._s3_key.format(self.date, self.language), path)
+            s3_key = self._s3_key.format(self.date, self.language, self.i)
+            s3.Bucket(self._s3_bucket).download_file(s3_key, path)
         return path
 
 
@@ -185,9 +196,9 @@ class _WordEmbeddingDataset(Dataset):
 
     """
 
-    def __init__(self, coded, idx_to_counts, subword_vocab=None,
-                 keep_max_size=False, min_size=0, window=5, negative=5,
-                 power=0.75):
+    def __init__(self, coded, idx_to_counts, sentence_boundaries=None,
+                 subword_vocab=None, keep_max_size=False, min_size=0, window=5,
+                 negative=5, power=0.75):
         idx_to_subwordidxs = subword_vocab.indices_to_subwordindices(
             list(range(len(idx_to_counts))))
 
@@ -209,12 +220,15 @@ class _WordEmbeddingDataset(Dataset):
         self.keep_max_size = keep_max_size
         self.min_size = min_size
 
-        # Throw away invalid sentences in the dataset
-        coded = [c for c in coded if len(c) > 1]
-
         # Flatten the datastructures
-        self._sentence_boundaries = np.cumsum([len(s) for s in coded])
-        self.coded = np.concatenate(coded)
+        if sentence_boundaries is None:
+            # Throw away invalid sentences in the dataset
+            coded = [c for c in coded if len(c) > 1]
+            self._sentence_boundaries = np.cumsum([len(s) for s in coded])
+            self.coded = np.concatenate(coded)
+        else:
+            self._sentence_boundaries = sentence_boundaries
+            self.coded = coded
 
         # Smoothed unigram counts for negative sampling. Negatives can be drawn
         # by sampling a number in [0, self._smoothed_cumsum[-1]) and finding

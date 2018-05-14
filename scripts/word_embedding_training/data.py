@@ -19,11 +19,12 @@
 """Data helpers"""
 
 import functools
+import collections
 import itertools
 import logging
 import math
 import multiprocessing as mp
-from concurrent.futures import ThreadPoolExecutor
+import concurrent.futures
 
 import numpy as np
 
@@ -50,7 +51,6 @@ def add_parameters(parser):
                        '[\'Text8\', \'Test\', \'Wikipedia\']')
 
     # Text8 arguments
-    pass
 
     # Wikipedia arguments
     group.add_argument(
@@ -60,6 +60,13 @@ def add_parameters(parser):
         'Manual specification in format YYYYMMDD, e.g. 20180514.')
     group.add_argument('--wikipedia-language', type=str, default='en',
                        help='Language of wikipedia dataset to use. ')
+    group.add_argument('--wikipedia-min-sentence-length', type=int, default=5,
+                       help='Minimum number of tokens to keep a sentence.')
+    group.add_argument('--wikipedia-min-worker-tok-freq', type=int, default=5,
+                       help='Tokens that occur less frequently are dropped. '
+                       'The threshold is applied per worker process.')
+    group.add_argument('--wikipedia-num-parts', type=int, default=100,
+                       help='Number of shards to read. Maximum: 100')
 
 
 ###############################################################################
@@ -83,8 +90,8 @@ def _get_sentence_corpus(args):
         elif args.train_dataset.lower() == 'text8':
             sentences = nlp.data.Text8(segment='train')
         elif args.train_dataset.lower() == 'wikipedia':
-            sentences = nlp.data.Wikipedia(date=args.wikipedia_date,
-                                           language=args.wikipedia_language)
+            raise RuntimeError(
+                'Use map reduce function for wikipedia dataset.')
         else:
             raise RuntimeError('Unknown dataset.')
 
@@ -135,13 +142,121 @@ def _preprocess_sentences(sentences):
         prune_sentences = functools.partial(
             nlp.data.word_embedding_training.prune_sentences,
             idx_to_pdiscard=idx_to_pdiscard)
-        with ThreadPoolExecutor(max_workers=num_workers) as e:
+        with concurrent.futures.ThreadPoolExecutor(
+                max_workers=num_workers) as e:
             coded = list(e.map(prune_sentences, coded))
 
     return vocab, coded
 
 
-def _get_train_dataset(args, vocab, coded):
+###############################################################################
+# Map reduce data helpers
+###############################################################################
+def _counter(dataset_class, min_freq, **kwargs):
+    sentences = dataset_class(**kwargs)
+    counts = nlp.data.utils.count_tokens(
+        itertools.chain.from_iterable(sentences))
+    for key, count in itertools.dropwhile(
+            lambda key_count: key_count[1] >= min_freq, counts.most_common()):
+        del counts[key]
+    return counts
+
+
+def _map_counter(dataset_class, kwargs, num_files, min_freq):
+    with concurrent.futures.ProcessPoolExecutor() as e:
+        for i in range(num_files):
+            future = e.submit(_counter, i=i, dataset_class=dataset_class,
+                              min_freq=min_freq, **kwargs)
+            yield future
+
+
+def _reduce_counter(futures):
+    future_list = list(futures)
+    future_seq = concurrent.futures.as_completed(future_list)
+    counts = sum((f.result() for f in future_seq), collections.Counter())
+    return counts
+
+
+def _coder(dataset_class, vocab, min_length, idx_to_pdiscard, **kwargs):
+    sentences = dataset_class(**kwargs)
+    prune_sentences_ = functools.partial(
+        nlp.data.word_embedding_training.prune_sentences,
+        idx_to_pdiscard=idx_to_pdiscard)
+    coded = [
+        prune_sentences_(
+            np.array([vocab[token] for token in s
+                      if token in vocab], dtype=np.int32)) for s in sentences
+        if len(s) > min_length
+    ]
+    # Pruning shortens, throw away too short sentences
+    coded = [c for c in coded if len(c) > min_length]
+    sentence_boundaries = np.cumsum([len(c) for c in coded])
+    coded = np.concatenate(coded)
+    return sentence_boundaries, coded
+
+
+def _map_coder(dataset_class, kwargs, num_files, vocab, min_length,
+               idx_to_pdiscard):
+    with concurrent.futures.ProcessPoolExecutor() as e:
+        for i in range(num_files):
+            future = e.submit(_coder, i=i, dataset_class=dataset_class,
+                              vocab=vocab, min_length=min_length,
+                              idx_to_pdiscard=idx_to_pdiscard, **kwargs)
+            yield future
+
+
+def _reduce_coder(futures):
+    future_list = list(futures)
+    future_seq = concurrent.futures.as_completed(future_list)
+    all_sentence_boundaries = []
+    all_coded = []
+    for f in future_seq:
+        sentence_boundaries, coded = f.result()
+        # Correct sentence boundaries
+        if len(all_sentence_boundaries):
+            sentence_boundaries = sentence_boundaries + \
+                all_sentence_boundaries[-1][-1]
+        all_sentence_boundaries.append(sentence_boundaries)
+        all_coded.append(coded)
+    sentence_boundaries = np.concatenate(all_sentence_boundaries)
+    coded = np.concatenate(all_coded)
+    return sentence_boundaries, coded
+
+
+def _preprocess_sentences_map_reduce(args):
+    if args.train_dataset.lower() == 'wikipedia':
+        dataset_class = nlp.data.Wikipedia
+        kwargs = dict(date=args.wikipedia_date,
+                      language=args.wikipedia_language)
+    else:
+        raise RuntimeError('Unsupported dataset')
+
+    num_files = min(args.wikipedia_num_parts, dataset_class.num_files)
+
+    with utils.print_time('read dataset and count tokens'):
+        counter_futures = _map_counter(dataset_class, kwargs, num_files,
+                                       args.wikipedia_min_worker_tok_freq)
+        counter = _reduce_counter(counter_futures)
+
+    vocab = nlp.Vocab(counter, unknown_token=None, padding_token=None,
+                      bos_token=None, eos_token=None, min_freq=5)
+    # Prepare datastructures for pruning frequent tokens
+    frequent_tokens_subsampling_constant = 1e-3
+    idx_to_counts = np.array(vocab.idx_to_counts, dtype=int)
+    f = idx_to_counts / np.sum(idx_to_counts)
+    idx_to_pdiscard = (np.sqrt(frequent_tokens_subsampling_constant / f) +
+                       frequent_tokens_subsampling_constant / f)
+
+    with utils.print_time('read dataset and code'):
+        coded_futures = _map_coder(dataset_class, kwargs, num_files, vocab,
+                                   args.wikipedia_min_sentence_length,
+                                   idx_to_pdiscard)
+        sentence_boundaries, coded = _reduce_coder(coded_futures)
+
+    return vocab, sentence_boundaries, coded
+
+
+def _get_train_dataset(args, vocab, coded, sentence_boundaries=None):
     idx_to_counts = np.array(vocab.idx_to_counts, dtype=int)
     # Get index to byte mapping from vocab
 
@@ -152,10 +267,11 @@ def _get_train_dataset(args, vocab, coded):
         #     dataset = nlp.data.SkipGramWordEmbeddingDataset(
         #         coded, idx_to_counts)
         if args.subword_network.lower() != 'fasttext':
-            subword_function = nlp.vocab.create('ByteSubwords')
-            subword_vocab = nlp.SubwordVocab(idx_to_token=vocab.idx_to_token,
-                                             subword_function=subword_function,
-                                             merge_indices=False)
+            with utils.print_time('create subword vocabulary'):
+                subword_function = nlp.vocab.create('ByteSubwords')
+                subword_vocab = nlp.SubwordVocab(
+                    idx_to_token=vocab.idx_to_token,
+                    subword_function=subword_function, merge_indices=False)
 
             # Get subword network data requirements
             if args.subword_network:
@@ -163,21 +279,28 @@ def _get_train_dataset(args, vocab, coded):
                     args.subword_network).min_size
             else:
                 min_size = 1
-            dataset = nlp.data.SkipGramWordEmbeddingDataset(
-                coded, idx_to_counts, subword_vocab, min_size=min_size)
+            with utils.print_time('create skipgram dataset'):
+                dataset = nlp.data.SkipGramWordEmbeddingDataset(
+                    coded=coded, idx_to_counts=idx_to_counts,
+                    subword_vocab=subword_vocab, min_size=min_size,
+                    sentence_boundaries=sentence_boundaries)
             # TODO: Enable SkipGramWordEmbeddingDataset without subword_vocab
             # As a workaround, set subword_vocab to None here
             if not args.subword_network.lower():
                 subword_vocab = None
         else:  # Optimized fasttext data iterator for fasttext
-            subword_function = nlp.vocab.create(
-                'NGramSubwords', vocabulary=vocab, ngrams=[3, 4, 5, 6],
-                max_num_subwords=1000000)
-            subword_vocab = nlp.SubwordVocab(idx_to_token=vocab.idx_to_token,
-                                             subword_function=subword_function,
-                                             merge_indices=True)
-            dataset = nlp.data.SkipGramFasttextWordEmbeddingDataset(
-                coded, idx_to_counts, subword_vocab)
+            with utils.print_time('create subword vocabulary'):
+                subword_function = nlp.vocab.create(
+                    'NGramSubwords', vocabulary=vocab, ngrams=[3, 4, 5, 6],
+                    max_num_subwords=1000000)
+                subword_vocab = nlp.SubwordVocab(
+                    idx_to_token=vocab.idx_to_token,
+                    subword_function=subword_function, merge_indices=True)
+            with utils.print_time('create skipgram dataset'):
+                dataset = nlp.data.SkipGramWordEmbeddingDataset(
+                    coded=coded, idx_to_counts=idx_to_counts,
+                    subword_vocab=subword_vocab, min_size=min_size,
+                    sentence_boundaries=sentence_boundaries)
     else:
         raise NotImplementedError('Objective {} not implemented.'.format(
             args.objective))
@@ -187,7 +310,13 @@ def _get_train_dataset(args, vocab, coded):
 
 def get_train_data(args):
     # TODO currently only supports skipgram
-    sentences = _get_sentence_corpus(args)
-    vocab, coded = _preprocess_sentences(sentences)
-    data = _get_train_dataset(args, vocab, coded)
+    if args.train_dataset.lower() != 'wikipedia':
+        sentences = _get_sentence_corpus(args)
+        vocab, coded = _preprocess_sentences(sentences)
+        sentence_boundaries = None
+    else:
+        vocab, sentence_boundaries, coded = _preprocess_sentences_map_reduce(
+            args)
+    data = _get_train_dataset(args, vocab, coded,
+                              sentence_boundaries=sentence_boundaries)
     return data

@@ -32,6 +32,8 @@ requirements = [
     'numpy',
     'numpy_indexed',
     'boto3',
+    'pyarrow',
+    'futures; python_version == "2.7"',
 ]
 
 setup(

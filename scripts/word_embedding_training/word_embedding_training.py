@@ -42,6 +42,7 @@ import fasttext
 import gluonnlp as nlp
 import subword
 import utils
+import bounded_executor
 
 try:
     import tqdm
@@ -237,20 +238,19 @@ def train(args):
     indices = np.arange(len(train_dataset))
     for epoch in range(args.epochs):
         np.random.shuffle(indices)
-        batches = [
-            indices[i:i + args.batch_size]
-            for i in range(0, len(indices), args.batch_size)
-        ]
+        with utils.print_time('create batch indices'):
+            batches = [
+                indices[i:i + args.batch_size]
+                for i in range(0, len(indices), args.batch_size)
+            ]
 
         if tqdm is not None:
             t = tqdm.trange(len(batches), smoothing=1)
         else:
             t = range(len(batches))
 
-        num_workers = math.ceil(mp.cpu_count() * 0.8)
-        executor = ThreadPoolExecutor(max_workers=num_workers)
-        for i, batch in zip(t, executor.map(train_dataset.__getitem__,
-                                            batches)):
+        for i, batch_idx in zip(t, batches):
+            batch = train_dataset[batch_idx]
             (source, target, label, unique_sources_indices,
              unique_sources_counts, unique_sources_subwordsequences,
              source_subword, unique_sources_subwordsequences_mask,
@@ -392,9 +392,6 @@ def train(args):
                                   global_step=current_update)
 
                 sw.flush()
-
-        # Shut down ThreadPoolExecutor
-        executor.shutdown()
 
     sw.close()
 
