@@ -370,13 +370,13 @@ def train(args):
                                          values=v.grad(ctx=context[0]),
                                          global_step=current_update, bins=200)
                 # Embedding out
-                embedding_out_norm = embedding_in.weight.data(
+                embedding_out_norm = embedding_out.weight.data(
                     ctx=context[0]).as_in_context(
                         mx.cpu()).tostype("default").norm(axis=1)
                 sw.add_histogram(tag='embedding_out_norm',
                                  values=embedding_out_norm,
                                  global_step=current_update, bins=200)
-                embedding_out_grad = embedding_in.weight.grad(
+                embedding_out_grad = embedding_out.weight.grad(
                     ctx=context[0]).as_in_context(
                         mx.cpu()).tostype("default").norm(axis=1)
                 sw.add_histogram(tag='embedding_out_grad',
