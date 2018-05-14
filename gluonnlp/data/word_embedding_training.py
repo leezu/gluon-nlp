@@ -209,6 +209,9 @@ class _WordEmbeddingDataset(Dataset):
         self.keep_max_size = keep_max_size
         self.min_size = min_size
 
+        # Throw away invalid sentences in the dataset
+        coded = [c for c in coded if len(c) > 1]
+
         # Flatten the datastructures
         self._sentence_boundaries = np.cumsum([len(s) for s in coded])
         self.coded = np.concatenate(coded)
@@ -349,7 +352,6 @@ def _build_sg_item(coded, idx, window, negative, token_freq_cumsum,
     sentence_start, sentence_end = get_sentence_start_end(
         sentence_boundaries, sentence_idx)
 
-    # TODO Throw away "sentences" for which assertion does not hold in Dataset class
     assert sentence_end - sentence_start > 1, \
         "Can't sample positive target from sentence with only one word"
 
