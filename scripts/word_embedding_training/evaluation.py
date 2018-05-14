@@ -72,7 +72,7 @@ def construct_vocab_embedding_for_dataset(args, tokens, vocab, embedding_in,
         # Compute embeddings based on subword units
         # 1. Create batch and mask for padding
         max_num_subwords = max(len(s) for s in known_tokens_subwordindices)
-        assert max_num_subwords > subword_net.subword.min_size, \
+        assert max_num_subwords > subword_net.min_size, \
             'All words have less subwords then the required minimum length. '\
             'Looks like a bug.'  # Check git blame to find padding code
         known_tokens_subwordindices_np = np.zeros(

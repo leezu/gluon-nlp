@@ -20,11 +20,35 @@
 ====================
 
 """
+import functools
 
 import mxnet as mx
 from mxnet import gluon
 
 import gluonnlp as nlp
+
+
+###############################################################################
+# Hyperparameters
+###############################################################################
+def add_subword_parameters_to_parser(parser):
+    group = parser.add_argument_group('Subword networks hyperparameters')
+    group.add_argument('--subword-embedding-size', type=int, default=32,
+                       help='Embedding size for each subword piece.')
+    group.add_argument('--subword-embedding-dropout', type=float, default=0.0,
+                       help='Embedding size for each subword piece.')
+
+    _subwordrnn_args(parser)
+
+
+def _subwordrnn_args(parser):
+    group = parser.add_argument_group('SubwordRNN hyperparameters.')
+    group.add_argument('--subwordrnn-mode', type=str, default='gru')
+    group.add_argument('--subwordrnn-hidden-size', type=int, default=128)
+    group.add_argument('--subwordrnn-num-layers', type=int, default=3)
+    group.add_argument('--subwordrnn-encoder-dropout', type=float, default=0.0)
+    group.add_argument('--subwordrnn-bidirectional', type=bool, default=True)
+
 
 ###############################################################################
 # Registry
@@ -50,9 +74,25 @@ def register(class_=None):
     return _real_register
 
 
-def create(name, **kwargs):
+def create(name, args, **kwargs):
     """Creates an instance of a registered network."""
     create_ = mx.registry.get_create_func(SubwordNetwork, 'subwordnetwork')
+
+    # General arguments
+    kwargs = dict(embed_size=args.subword_embedding_size,
+                  embedding_dropout=args.subword_embedding_dropout,
+                  output_size=args.emsize, **kwargs)
+
+    # Network specific arguments
+    if name.lower() == 'subwordrnn':
+        kwargs = dict(
+            mode=args.subwordrnn_mode, hidden_size=args.subwordrnn_hidden_size,
+            num_layers=args.subwordrnn_num_layers,
+            bidirectional=args.subwordrnn_bidirectional,
+            encoder_dropout=args.subwordrnn_encoder_dropout, **kwargs)
+    else:
+        raise NotImplementedError
+
     return create_(name, **kwargs)
 
 
@@ -101,22 +141,24 @@ class SubwordRNN(SubwordNetwork):
 
     """
 
-    def __init__(self, mode, embed_size, hidden_size, output_size,
-                 num_layers=1, vocab_size=256, dropout=0.5, **kwargs):
+    def __init__(self, mode, embed_size, hidden_size, output_size, num_layers,
+                 embedding_dropout, bidirectional, encoder_dropout,
+                 vocab_size=256, **kwargs):
         super(SubwordRNN, self).__init__(**kwargs)
-        self._mode = mode
-        self._embed_size = embed_size
-        self._hidden_size = hidden_size
-        self._output_size = output_size
-        self._dropout = dropout
-        self._num_layers = num_layers
-        self._vocab_size = vocab_size
+        # Embedding
+        self.vocab_size = vocab_size
+        self.embedding_dropout = embedding_dropout
 
-        self._bidirectional = True
-        self._weight_dropout = 0
-        self._var_drop_in = 0
-        self._var_drop_state = 0
-        self._var_drop_out = 0
+        # Encoder
+        self.mode = mode
+        self.embed_size = embed_size
+        self.hidden_size = hidden_size
+        self.bidirectional = bidirectional
+        self.num_layers = num_layers
+        self.encoder_dropout = encoder_dropout
+
+        # Output
+        self.output_size = output_size
 
         with self.name_scope():
             self.embedding = self._get_embedding()
@@ -127,24 +169,35 @@ class SubwordRNN(SubwordNetwork):
         embedding = gluon.nn.HybridSequential()
         with embedding.name_scope():
             embedding.add(
-                gluon.nn.Embedding(self._vocab_size, self._embed_size,
+                gluon.nn.Embedding(self.vocab_size, self.embed_size,
                                    weight_initializer=mx.init.Uniform(0.1)))
-            if self._dropout:
-                embedding.add(gluon.nn.Dropout(self._dropout))
+            if self.embedding_dropout:
+                embedding.add(gluon.nn.Dropout(self.embedding_dropout))
 
             # Change NTC to TNC layout (for RNN)
             embedding.add(gluon.nn.HybridLambda(lambda F, x: x.swapaxes(0, 1)))
         return embedding
 
     def _get_encoder(self):
-        return nlp.model.utils._get_rnn_layer(
-            self._mode, self._num_layers, self._embed_size, self._hidden_size,
-            self._dropout, 0)
+        if self.mode == 'rnn_relu':
+            rnn_block = functools.partial(gluon.rnn.RNN, activation='relu')
+        elif self.mode == 'rnn_tanh':
+            rnn_block = functools.partial(gluon.rnn.RNN, activation='tanh')
+        elif self.mode == 'lstm':
+            rnn_block = gluon.rnn.LSTM
+        elif self.mode == 'gru':
+            rnn_block = gluon.rnn.GRU
+
+        rnn = rnn_block(
+            hidden_size=self.hidden_size, num_layers=self.num_layers,
+            dropout=self.encoder_dropout, bidirectional=self.bidirectional,
+            input_size=self.embed_size)
+        return rnn
 
     def _get_decoder(self):
         output = gluon.nn.HybridSequential()
         with output.name_scope():
-            output.add(gluon.nn.Dense(self._output_size, flatten=False))
+            output.add(gluon.nn.Dense(self.output_size, flatten=True))
         return output
 
     def begin_state(self, *args, **kwargs):
@@ -155,20 +208,22 @@ class SubwordRNN(SubwordNetwork):
         :py:class:`NDArray` or :py:class:`Symbol`."""
         F = mx.nd
         embeddings = self.embedding(inputs)
-        if begin_state is None:
-            begin_state = self.begin_state(batch_size=embeddings.shape[1],
-                                           ctx=inputs.context)
-        encoded, states = self.encoder(embeddings, begin_state)
-
-        if self._dropout:
-            encoded = F.Dropout(encoded, p=self._dropout, axes=(0, ))
-        out = self.decoder(encoded)
 
         # Switch mask from NT to TN
         mask = F.transpose(mask)
-        out = F.broadcast_mul(out, F.expand_dims(mask, axis=-1))
+        masked_embeddings = F.broadcast_mul(embeddings,
+                                            F.expand_dims(mask, axis=-1))
 
-        out = F.max(out, axis=0)
+        if begin_state is None:
+            begin_state = self.begin_state(batch_size=embeddings.shape[1],
+                                           ctx=inputs.context)
+
+        encoded, states = self.encoder(masked_embeddings, begin_state)
+
+        # Switch states to NT
+        assert len(states) == 1
+        states = states[0].swapaxes(0, 1)
+        out = self.decoder(states)
         return out
 
 

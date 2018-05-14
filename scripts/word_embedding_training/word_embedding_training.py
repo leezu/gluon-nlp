@@ -74,6 +74,7 @@ def get_args():
     group.add_argument(
         '--normalized-initialization', action='store_true',
         help='Normalize uniform initialization range by embedding size.')
+
     # Evaluation arguments
     group = parser.add_argument_group('Evaluation arguments')
     group.add_argument('--eval-interval', type=int, default=100,
@@ -126,6 +127,9 @@ def get_args():
                        'Tensorboard compatible logs are stored there. '
                        'Defaults to a random directory in ./logs')
 
+    # Add subword specific args
+    subword.add_subword_parameters_to_parser(parser)
+
     args = parser.parse_args()
 
     return args
@@ -163,26 +167,6 @@ def setup_logging(args):
     logging.info('Logging to {}'.format(args.logdir))
 
 
-class SubwordEmbeddings(gluon.Block):
-    def __init__(self, embedding_dim, subword_network, **kwargs):
-        super().__init__(**kwargs)
-
-        self.embedding_dim = embedding_dim
-
-        with self.name_scope():
-            if 'rnn' in subword_network.lower():
-                self.subword = subword.create(
-                    name=subword_network, mode='lstm', embed_size=32,
-                    hidden_size=64, output_size=embedding_dim)
-            else:
-                self.subword = subword.create(name=subword_network,
-                                              embed_size=32,
-                                              output_size=embedding_dim)
-
-    def forward(self, token_bytes, mask):
-        return self.subword(token_bytes, mask)
-
-
 ###############################################################################
 # Build the model
 ###############################################################################
@@ -214,8 +198,7 @@ def get_model(args, train_dataset):
         embedding_in = None
 
     if args.subword_network:
-        subword_net = SubwordEmbeddings(embedding_dim=args.emsize,
-                                        subword_network=args.subword_network)
+        subword_net = subword.create(name=args.subword_network, args=args)
         subword_net.initialize(mx.init.Xavier(), ctx=context)
 
         if not args.dont_hybridize:
