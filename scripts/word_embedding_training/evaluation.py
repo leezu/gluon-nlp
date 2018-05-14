@@ -39,6 +39,7 @@ def construct_vocab_embedding_for_dataset(args, tokens, vocab, embedding_in,
                                           subword_net=None):
     '''Precompute the token embeddings for all the words in the vocabulary'''
     assert len(tokens) == len(set(tokens)), 'tokens contains duplicates.'
+    assert embedding_in is not None or subword_net is not None
 
     context = utils.get_context(args)
     token_subword_embeddings = []
@@ -53,14 +54,17 @@ def construct_vocab_embedding_for_dataset(args, tokens, vocab, embedding_in,
         # Collect tokens for which either word or subword embeddings are known
         for token, subword_indices in zip(tokens, words_subword_indices):
             # If no subwords are associated with this token
-            if not len(subword_indices) and token not in vocab:
+            if (not len(subword_indices) and vocab is not None
+                    and token not in vocab):
                 continue
 
             known_tokens.append(token)
             # subword_indices may be empty list
             known_tokens_subwordindices.append(subword_indices)
 
-            if token in vocab:
+            if vocab is None:
+                continue
+            elif token in vocab:
                 token_mask.append(1)
             else:
                 token_mask.append(0)
@@ -117,21 +121,24 @@ def construct_vocab_embedding_for_dataset(args, tokens, vocab, embedding_in,
     token_to_idx = {token: i for i, token in enumerate(known_tokens)}
 
     # Look up token embeddings from embedding_in
-    known_token_idx = [
-        vocab.to_indices(t) if t in vocab else 0 for t in known_tokens
-    ]
-    known_token_idx_nd = mx.nd.array(known_token_idx, ctx=context[0])
-    known_token_idx_mask_nd = mx.nd.array(token_mask, ctx=context[0]) \
-                                   .expand_dims(-1)
-    unmasked_token_embeddings = embedding_in(known_token_idx_nd)
-    token_embeddings = mx.nd.broadcast_mul(unmasked_token_embeddings,
-                                           known_token_idx_mask_nd)
+    if embedding_in is not None:
+        known_token_idx = [
+            vocab.to_indices(t) if t in vocab else 0 for t in known_tokens
+        ]
+        known_token_idx_nd = mx.nd.array(known_token_idx, ctx=context[0])
+        known_token_idx_mask_nd = mx.nd.array(token_mask, ctx=context[0]) \
+                                       .expand_dims(-1)
+        unmasked_token_embeddings = embedding_in(known_token_idx_nd)
+        token_embeddings = mx.nd.broadcast_mul(unmasked_token_embeddings,
+                                               known_token_idx_mask_nd)
 
     # Combine subword and word level embeddings
-    if subword_vocab is not None:
+    if subword_vocab is not None and embedding_in is not None:
         assert token_embeddings.shape == \
             token_subword_embeddings.shape
         embeddings = token_embeddings + token_subword_embeddings
+    elif subword_vocab is not None:
+        embeddings = token_subword_embeddings
     else:
         embeddings = token_embeddings
 
@@ -220,10 +227,14 @@ def evaluate(args, embedding_in, subword_net, vocab, subword_vocab):
                 sr_correlation += result
     sr_correlation /= len(args.similarity_datasets)
 
-    num_zero_rows, num_total_rows = evaluate_num_zero_rows(args, embedding_in)
+    if embedding_in is not None:
+        num_zero_rows, num_total_rows = evaluate_num_zero_rows(
+            args, embedding_in)
+        return {
+            'SpearmanR': sr_correlation,
+            'Zero': num_zero_rows / num_total_rows,
+            'Total': num_total_rows,
+        }
 
-    return {
-        'SpearmanR': sr_correlation,
-        'Zero': num_zero_rows / num_total_rows,
-        'Total': num_total_rows,
-    }
+    else:
+        return {'SpearmanR': sr_correlation}

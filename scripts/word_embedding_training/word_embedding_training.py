@@ -59,10 +59,14 @@ def get_args():
 
     # Model arguments
     group = parser.add_argument_group('Model arguments')
+    group.add_argument('--no-token-embedding', action='store_true',
+                       help='Don\'t use any token embedding. '
+                       'Only use subword units.')
     group.add_argument(
         '--subword-network', type=str, default='SubwordCNN',
         help=('Network architecture to infer subword level embeddings. ' +
-              str(subword.list_subwordnetworks()) + ' or fasttext'))
+              str(subword.list_subwordnetworks()) +
+              ' , fasttext or empty to disable'))
     group.add_argument('--objective', type=str, default='skipgram',
                        help='Word embedding training objective.')
     group.add_argument('--emsize', type=int, default=300,
@@ -139,6 +143,10 @@ def validate_args(args):
             print('{} is not a supported dataset.'.format(dataset_name))
             sys.exit(1)
 
+    if args.no_token_embedding and not args.subword_network:
+        raise RuntimeError('At least one of token and subword level embedding '
+                           'has to be used')
+
 
 def setup_logging(args):
     """Set up the logging directory."""
@@ -173,31 +181,43 @@ class SubwordEmbeddings(gluon.Block):
 # Build the model
 ###############################################################################
 def get_model(args, train_dataset):
+    assert not (args.no_token_embedding and not args.subword_network)
     num_tokens = train_dataset.num_tokens
-
-    embedding_in = gluon.nn.SparseEmbedding(num_tokens, args.emsize)
-    subword_net = SubwordEmbeddings(embedding_dim=args.emsize,
-                                    subword_network=args.subword_network)
-    embedding_out = gluon.nn.SparseEmbedding(num_tokens, args.emsize)
-
     context = utils.get_context(args)
     embeddings_context = [context[0]]
+    embedding_out = gluon.nn.SparseEmbedding(num_tokens, args.emsize)
     if args.normalized_initialization:
-        embedding_in.initialize(
-            mx.init.Uniform(scale=1 / args.emsize), ctx=embeddings_context)
         embedding_out.initialize(
             mx.init.Uniform(scale=1 / args.emsize), ctx=embeddings_context)
     else:
-        embedding_in.initialize(mx.init.Uniform(), ctx=embeddings_context)
         embedding_out.initialize(mx.init.Uniform(), ctx=embeddings_context)
-    subword_net.initialize(mx.init.Xavier(), ctx=context)
+    if not args.dont_hybridize:
+        embedding_out.hybridize()
+
+    if not args.no_token_embedding:
+        embedding_in = gluon.nn.SparseEmbedding(num_tokens, args.emsize)
+        if args.normalized_initialization:
+            embedding_in.initialize(
+                mx.init.Uniform(scale=1 / args.emsize), ctx=embeddings_context)
+        else:
+            embedding_in.initialize(mx.init.Uniform(), ctx=embeddings_context)
+
+        if not args.dont_hybridize:
+            embedding_in.hybridize()
+    else:
+        embedding_in = None
+
+    if args.subword_network:
+        subword_net = SubwordEmbeddings(embedding_dim=args.emsize,
+                                        subword_network=args.subword_network)
+        subword_net.initialize(mx.init.Xavier(), ctx=context)
+
+        if not args.dont_hybridize:
+            subword_net.hybridize()
+    else:
+        subword_net = None
 
     loss = gluon.loss.SigmoidBinaryCrossEntropyLoss()
-
-    if not args.dont_hybridize:
-        embedding_in.hybridize()
-        embedding_out.hybridize()
-        subword_net.hybridize()
 
     return embedding_in, embedding_out, subword_net, loss
 
@@ -268,27 +288,32 @@ def train(args):
                 even_split=False)
 
             with mx.autograd.record():
-                # Compute subword embeddings from subword info (byte sequences)
-                subword_embedding_weights = []
-                for subwordsequences_ctx, mask_ctx in zip(
-                        unique_token_subwordsequences,
-                        unique_sources_subwordsequences_mask):
-                    subword_embedding_weights.append(
-                        subword_net(subwordsequences_ctx,
-                                    mask_ctx).as_in_context(context[0]))
-                subword_embedding_weights = mx.nd.concat(
-                    *subword_embedding_weights, dim=0)
+                if subword_net is not None:
+                    # Compute subword embeddings from subword info (byte sequences)
+                    subword_embedding_weights = []
+                    for subwordsequences_ctx, mask_ctx in zip(
+                            unique_token_subwordsequences,
+                            unique_sources_subwordsequences_mask):
+                        subword_embedding_weights.append(
+                            subword_net(subwordsequences_ctx,
+                                        mask_ctx).as_in_context(context[0]))
+                    subword_embedding_weights = mx.nd.concat(
+                        *subword_embedding_weights, dim=0)
 
-                # Look up subword embeddings of batch
-                subword_embeddings = mx.nd.Embedding(
-                    data=source_subword, weight=subword_embedding_weights,
-                    input_dim=subword_embedding_weights.shape[0],
-                    output_dim=args.emsize)
+                    # Look up subword embeddings of batch
+                    subword_embeddings = mx.nd.Embedding(
+                        data=source_subword, weight=subword_embedding_weights,
+                        input_dim=subword_embedding_weights.shape[0],
+                        output_dim=args.emsize)
 
                 # Look up token embeddings of batch
-                word_embeddings = embedding_in(source)
+                if embedding_in is not None:
+                    word_embeddings = embedding_in(source)
+                    emb_in = subword_embeddings + word_embeddings
+                else:
+                    assert subword_net is not None
+                    emb_in = subword_embeddings
 
-                emb_in = subword_embeddings + word_embeddings
                 emb_out = embedding_out(target)
 
                 pred = mx.nd.batch_dot(emb_in, emb_out.swapaxes(1, 2))
@@ -297,24 +322,27 @@ def train(args):
             loss.backward()
 
             # Training of dense params
-            dense_trainer.step(batch_size=args.batch_size)
+            if subword_net is not None:
+                dense_trainer.step(batch_size=args.batch_size)
 
-            # Training of sparse params
-            if i % args.eval_interval == 0:
-                lazy_update = False  # Force eager update before evaluation
-            else:
-                lazy_update = True
-            emb_in_grad_normalization = mx.nd.sparse.row_sparse_array(
-                (unique_sources_counts.reshape(
-                    (-1, 1)), unique_sources_indices), ctx=context[0],
-                dtype=np.float32)
-            utils.train_embedding(
-                args, embedding_in.weight.data(context[0]),
-                embedding_in.weight.grad(
-                    context[0]), emb_in_grad_normalization, with_sparsity=True,
-                last_update_buffer=last_update_buffer,
-                current_update=current_update, lazy_update=lazy_update)
-            current_update += 1
+            # Training of token level embeddings with sparsity objective
+            if embedding_in is not None:
+                if i % args.eval_interval == 0:
+                    lazy_update = False  # Force eager update before evaluation
+                else:
+                    lazy_update = True
+                emb_in_grad_normalization = mx.nd.sparse.row_sparse_array(
+                    (unique_sources_counts.reshape(
+                        (-1, 1)), unique_sources_indices), ctx=context[0],
+                    dtype=np.float32)
+                utils.train_embedding(
+                    args, embedding_in.weight.data(context[0]),
+                    embedding_in.weight.grad(
+                        context[0]), emb_in_grad_normalization,
+                    with_sparsity=True, last_update_buffer=last_update_buffer,
+                    current_update=current_update, lazy_update=lazy_update)
+
+            # Training of emb_out
             emb_out_grad_normalization = mx.nd.sparse.row_sparse_array(
                 (unique_targets_counts.reshape(
                     (-1, 1)), unique_targets_indices), ctx=context[0],
@@ -323,6 +351,8 @@ def train(args):
                                   embedding_out.weight.grad(context[0]),
                                   emb_out_grad_normalization)
 
+            current_update += 1
+
             if i % args.eval_interval == 0:
                 eval_dict = evaluation.evaluate(
                     args, embedding_in, subword_net, vocab, subword_vocab)
@@ -330,23 +360,38 @@ def train(args):
 
                 # Mxboard
                 # Histogram
-                embedding_in_norm = embedding_in.weight.data(
-                    ctx=context[0]).as_in_context(
-                        mx.cpu()).tostype("default").norm(axis=1)
-                sw.add_histogram(tag='embedding_in_norm',
-                                 values=embedding_in_norm,
-                                 global_step=current_update, bins=200)
-                embedding_in_grad = embedding_in.weight.grad(
-                    ctx=context[0]).as_in_context(
-                        mx.cpu()).tostype("default").norm(axis=1)
-                sw.add_histogram(tag='embedding_in_grad',
-                                 values=embedding_in_grad,
-                                 global_step=current_update, bins=200)
+                if embedding_in is not None:
+                    embedding_in_norm = embedding_in.weight.data(
+                        ctx=context[0]).as_in_context(
+                            mx.cpu()).tostype("default").norm(axis=1)
+                    sw.add_histogram(tag='embedding_in_norm',
+                                     values=embedding_in_norm,
+                                     global_step=current_update, bins=200)
+                    embedding_in_grad = embedding_in.weight.grad(
+                        ctx=context[0]).as_in_context(
+                            mx.cpu()).tostype("default").norm(axis=1)
+                    sw.add_histogram(tag='embedding_in_grad',
+                                     values=embedding_in_grad,
+                                     global_step=current_update, bins=200)
+                if subword_net is not None:
+                    for k, v in subword_net.collect_params().items():
+                        sw.add_histogram(tag=k, values=v.data(ctx=context[0]),
+                                         global_step=current_update, bins=200)
+                        sw.add_histogram(tag='grad-' + str(k),
+                                         values=v.grad(ctx=context[0]),
+                                         global_step=current_update, bins=200)
+                # Embedding out
                 embedding_out_norm = embedding_in.weight.data(
                     ctx=context[0]).as_in_context(
                         mx.cpu()).tostype("default").norm(axis=1)
                 sw.add_histogram(tag='embedding_out_norm',
                                  values=embedding_out_norm,
+                                 global_step=current_update, bins=200)
+                embedding_out_grad = embedding_in.weight.grad(
+                    ctx=context[0]).as_in_context(
+                        mx.cpu()).tostype("default").norm(axis=1)
+                sw.add_histogram(tag='embedding_out_grad',
+                                 values=embedding_out_grad,
                                  global_step=current_update, bins=200)
 
                 # Scalars
