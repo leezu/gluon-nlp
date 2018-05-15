@@ -25,11 +25,9 @@ This example shows how to train word embeddings.
 
 import argparse
 import logging
-import math
-import multiprocessing as mp
 import sys
 import tempfile
-from concurrent.futures import ThreadPoolExecutor
+import os
 
 import mxnet as mx
 import numpy as np
@@ -42,7 +40,6 @@ import fasttext
 import gluonnlp as nlp
 import subword
 import utils
-import bounded_executor
 
 try:
     import tqdm
@@ -163,6 +160,10 @@ def setup_logging(args):
 
     if not args.logdir:
         args.logdir = tempfile.mkdtemp(dir='./logs')
+    elif not os.path.isdir(args.logdir):
+        os.makedirs(args.logdir)
+    elif os.path.isfile(args.logdir):
+        raise RuntimeError('{} is a file.'.format(args.logdir))
 
     logging.info('Logging to {}'.format(args.logdir))
 

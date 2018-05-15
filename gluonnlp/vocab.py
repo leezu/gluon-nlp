@@ -422,8 +422,8 @@ class Vocab(object):
         return 'Vocab(size={}, unk="{}", reserved="{}")'.format(
             len(self), self._unknown_token, self._reserved_tokens)
 
-    def to_json(self):
-        """Serialize Vocab object to json string.
+    def to_json(self, path=None):
+        """Serialize Vocab object to json string or write it to path.
 
         This method does not serialize the underlying embedding.
         """
@@ -441,7 +441,11 @@ class Vocab(object):
         vocab_dict['padding_token'] = self._padding_token
         vocab_dict['bos_token'] = self._bos_token
         vocab_dict['eos_token'] = self._eos_token
-        return json.dumps(vocab_dict)
+        if path is None:
+            return json.dumps(vocab_dict)
+        else:
+            with open(path, 'w') as f:
+                json.dump(vocab_dict, f)
 
     @staticmethod
     def from_json(json_str):
@@ -540,6 +544,18 @@ class SubwordVocab(object):
     def __len__(self):
         return len(self.subword_function)
 
+    def to_json(self, path=None):
+        """Serialize subword vocab object to json string or write it to path."""
+        dict_ = {}
+        dict_['subwordidx_to_subword'] = \
+            self.subword_function.indices_to_subwords(
+                list(range(len(self.subword_function))))
+        if path is None:
+            return json.dumps(dict_)
+        else:
+            with open(path, 'w') as f:
+                json.dump(dict_, f)
+
 
 ###############################################################################
 # Subword functions and registry
@@ -597,6 +613,9 @@ class ByteSubwords(_SubwordFunction):
     def __len__(self):
         return 256
 
+    def __repr__(self):
+        return 'ByteSubwords(encoding={})'.format(self.encoding)
+
     def indices_to_subwords(self, indices):
         return indices
 
@@ -630,6 +649,11 @@ class NGramSubwords(_SubwordFunction):
         # Requires Py3.6+
         self.subwordidx_to_subword = list(self.subword_to_subwordidx.keys())
 
+        # Information for __repr__
+        self.vocabulary_repr = repr(vocabulary)
+        self.max_num_subwords = max_num_subwords
+        self.ngrams = ngrams
+
     @staticmethod
     def _get_all_ngram_generator(words, ngrams):
         return ((('<' + word + '>')[i:i + N] for N in ngrams
@@ -645,6 +669,11 @@ class NGramSubwords(_SubwordFunction):
 
     def __len__(self):
         return len(self.subwordidx_to_subword)
+
+    def __repr__(self):
+        return ('NGramSubwords(vocabulary={}, '
+                'max_num_subwords={}, ngrams={})'.format(
+                    self.vocabulary_repr, self.max_num_subwords, self.ngrams))
 
     def indices_to_subwords(self, indices):
         return [self.subwordidx_to_subword[i] for i in indices]

@@ -25,6 +25,7 @@ import logging
 import math
 import multiprocessing as mp
 import concurrent.futures
+import os
 
 import numpy as np
 
@@ -317,6 +318,12 @@ def get_train_data(args):
     else:
         vocab, sentence_boundaries, coded = _preprocess_sentences_map_reduce(
             args)
-    data = _get_train_dataset(args, vocab, coded,
-                              sentence_boundaries=sentence_boundaries)
-    return data
+    dataset, vocab, subword_vocab = _get_train_dataset(
+        args, vocab, coded, sentence_boundaries=sentence_boundaries)
+
+    # Log vocab and subword vocab
+    vocab.to_json(os.path.join(args.logdir, 'vocab.json'))
+    if subword_vocab is not None:
+        subword_vocab.to_json(os.path.join(args.logdir, 'subword_vocab.json'))
+
+    return dataset, vocab, subword_vocab
