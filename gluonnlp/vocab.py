@@ -94,6 +94,8 @@ class Vocab(object):
     unknown_token : hashable object or None
         The representation for any unknown token. In other words, any unknown token will be indexed
         as the same representation.
+    max_token_length : int, default None
+        If not None, tokens for which len(token) > max_token_length is True are discarded.
 
 
     Examples
@@ -145,7 +147,7 @@ class Vocab(object):
     def __init__(self, counter=None, max_size=None, min_freq=1,
                  unknown_token=C.UNK_TOKEN, padding_token=C.PAD_TOKEN,
                  bos_token=C.BOS_TOKEN, eos_token=C.EOS_TOKEN,
-                 reserved_tokens=None):
+                 reserved_tokens=None, max_token_length=None):
 
         # Sanity checks.
         assert min_freq > 0, '`min_freq` must be set to a positive value.'
@@ -171,6 +173,7 @@ class Vocab(object):
                 '`reserved_tokens` cannot contain duplicate reserved tokens or ' \
                 'other special tokens.'
         self._index_special_tokens(unknown_token, special_tokens)
+        self.max_token_length = max_token_length
 
         if counter:
             self._index_counter_keys(counter, unknown_token, special_tokens,
@@ -220,6 +223,9 @@ class Vocab(object):
                                                        max_size)
 
         for token, freq in token_freqs:
+            if (self.max_token_length is not None
+                    and len(token) > self.max_token_length):
+                continue
             if freq < min_freq or len(self._idx_to_token) == token_cap:
                 break
             if token not in unknown_and_special_tokens:
@@ -419,8 +425,10 @@ class Vocab(object):
         return self[tokens]
 
     def __repr__(self):
-        return 'Vocab(size={}, unk="{}", reserved="{}")'.format(
-            len(self), self._unknown_token, self._reserved_tokens)
+        return ('Vocab(size={}, unk="{}", reserved="{}", '
+                'max_token_length)'.format(
+                    len(self), self._unknown_token, self._reserved_tokens,
+                    self.max_token_length))
 
     def to_json(self, path=None):
         """Serialize Vocab object to json string or write it to path.
