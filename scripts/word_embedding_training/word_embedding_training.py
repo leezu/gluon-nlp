@@ -394,6 +394,10 @@ def train(args):
 
                 sw.flush()
 
+                # Save params after evaluation
+                utils.save_params(args, embedding_in, embedding_out,
+                                  subword_net, current_update)
+
     sw.close()
 
 

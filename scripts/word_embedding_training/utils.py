@@ -19,6 +19,7 @@
 """Utility functions"""
 
 import logging
+import os
 import time
 from contextlib import contextmanager
 
@@ -78,11 +79,11 @@ def train_embedding(args, param_data, param_grad, grad_normalization=None,
             param_grad = mx.nd.sparse.row_sparse_array(param_data.shape,
                                                        ctx=param_data.context)
 
-        mx.nd.sparse.sgd_update(weight=param_data, grad=param_grad,
-                                last_update_buffer=last_update_buffer,
-                                lr=args.embeddings_lr, sparsity=args.sparsity_lambda,
-                                current_update=current_update, out=param_data,
-                                lazy_update=lazy_update)
+        mx.nd.sparse.sgd_update(
+            weight=param_data, grad=param_grad,
+            last_update_buffer=last_update_buffer, lr=args.embeddings_lr,
+            sparsity=args.sparsity_lambda, current_update=current_update,
+            out=param_data, lazy_update=lazy_update)
     else:
         # TODO make last_update_buffer and current_update optional on mxnet side.
         mx.nd.sparse.sgd_update(
@@ -90,3 +91,17 @@ def train_embedding(args, param_data, param_grad, grad_normalization=None,
                 param_data.shape,
                 ctx=param_data.context), lr=args.embeddings_lr, sparsity=0,
             current_update=0, out=param_data, lazy_update=lazy_update)
+
+
+def save_params(args, embedding_in, embedding_out, subword_net,
+                global_step=''):
+    dir = args.logdir
+    if embedding_in is not None:
+        embedding_in.collect_params().save(
+            os.path.join(dir, 'embedding_in-{}'.format(global_step)))
+    if embedding_out is not None:
+        embedding_out.collect_params().save(
+            os.path.join(dir, 'embedding_out-{}'.format(global_step)))
+    if subword_net is not None:
+        subword_net.collect_params().save(
+            os.path.join(dir, 'subword_net-{}'.format(global_step)))
