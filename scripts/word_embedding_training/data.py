@@ -68,6 +68,8 @@ def add_parameters(parser):
                        'The threshold is applied per worker process.')
     group.add_argument('--wikipedia-num-parts', type=int, default=100,
                        help='Number of shards to read. Maximum: 100')
+    group.add_argument('--wikipedia-vocab-max-token-length', type=int,
+                       default=20, help='Filter tokens that are longer.')
 
 
 ###############################################################################
@@ -153,21 +155,23 @@ def _preprocess_sentences(sentences):
 ###############################################################################
 # Map reduce data helpers
 ###############################################################################
-def _counter(dataset_class, min_freq, **kwargs):
+def _counter(dataset_class, args, **kwargs):
     sentences = dataset_class(**kwargs)
     counts = nlp.data.utils.count_tokens(
         itertools.chain.from_iterable(sentences))
-    for key, count in itertools.dropwhile(
-            lambda key_count: key_count[1] >= min_freq, counts.most_common()):
-        del counts[key]
+    for key, count in counts.most_common():
+        if len(key) > args.wikipedia_vocab_max_token_length:
+            del counts[key]
+        elif count < args.wikipedia_min_worker_tok_freq:
+            del counts[key]
     return counts
 
 
-def _map_counter(dataset_class, kwargs, num_files, min_freq):
+def _map_counter(dataset_class, kwargs, num_files, args):
     with concurrent.futures.ProcessPoolExecutor() as e:
         for i in range(num_files):
             future = e.submit(_counter, i=i, dataset_class=dataset_class,
-                              min_freq=min_freq, **kwargs)
+                              args=args, **kwargs)
             yield future
 
 
@@ -235,12 +239,12 @@ def _preprocess_sentences_map_reduce(args):
     num_files = min(args.wikipedia_num_parts, dataset_class.num_files)
 
     with utils.print_time('read dataset and count tokens'):
-        counter_futures = _map_counter(dataset_class, kwargs, num_files,
-                                       args.wikipedia_min_worker_tok_freq)
+        counter_futures = _map_counter(dataset_class, kwargs, num_files, args)
         counter = _reduce_counter(counter_futures)
 
     vocab = nlp.Vocab(counter, unknown_token=None, padding_token=None,
-                      bos_token=None, eos_token=None, min_freq=5)
+                      bos_token=None, eos_token=None, min_freq=5,
+                      max_token_length=args.wikipedia_vocab_max_token_length)
     # Prepare datastructures for pruning frequent tokens
     frequent_tokens_subsampling_constant = 1e-3
     idx_to_counts = np.array(vocab.idx_to_counts, dtype=int)
