@@ -264,8 +264,6 @@ def train(args):
                 unique_sources_subwordsequences_last_valid ==
                 -1] = unique_sources_subwordsequences_mask.shape[1] - 1
 
-            mx.nd.waitall()
-
             # Load data for training embedding matrix to context[0]
             source = mx.nd.array(source, ctx=context[0])
             target = mx.nd.array(target, ctx=context[0])
@@ -386,6 +384,9 @@ def train(args):
             current_update += 1
 
             if i % args.eval_interval == 0:
+                with utils.print_time('mx.nd.waitall()'):
+                    mx.nd.waitall()
+
                 # Mxboard
                 # Histogram
                 if embedding_in is not None:
