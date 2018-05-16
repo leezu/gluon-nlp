@@ -94,7 +94,7 @@ def get_args():
     group = parser.add_argument_group('Computation arguments')
     group.add_argument('--batch-size', type=int, default=1024,
                        help='Batch size for training.')
-    group.add_argument('--sparsity-lambda', type=float, default=0.01,
+    group.add_argument('--sparsity-lambda', type=float, default=0.001,
                        help='Initial learning rate')
     group.add_argument('--epochs', type=int, default=5, help='Epoch limit')
     group.add_argument('--gpu', type=int, nargs='+',
