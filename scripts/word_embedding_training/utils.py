@@ -20,6 +20,7 @@
 
 import logging
 import os
+import tempfile
 import time
 from contextlib import contextmanager
 
@@ -93,15 +94,24 @@ def train_embedding(args, param_data, param_grad, grad_normalization=None,
             current_update=0, out=param_data, lazy_update=lazy_update)
 
 
+def _get_tempfilename(directory):
+    f, path = tempfile.mkstemp(dir=directory)
+    os.close(f)
+    return path
+
+
 def save_params(args, embedding_in, embedding_out, subword_net,
                 global_step=''):
-    dir = args.logdir
+    # write to temporary file; use os.replace
     if embedding_in is not None:
-        embedding_in.collect_params().save(
-            os.path.join(dir, 'embedding_in-{}'.format(global_step)))
+        p = _get_tempfilename(args.logdir)
+        embedding_in.collect_params().save(p)
+        os.replace(p, os.path.join(args.logdir, 'embedding_in'))
     if embedding_out is not None:
-        embedding_out.collect_params().save(
-            os.path.join(dir, 'embedding_out-{}'.format(global_step)))
+        p = _get_tempfilename(args.logdir)
+        embedding_out.collect_params().save(p)
+        os.replace(p, os.path.join(args.logdir, 'embedding_out'))
     if subword_net is not None:
-        subword_net.collect_params().save(
-            os.path.join(dir, 'subword_net-{}'.format(global_step)))
+        p = _get_tempfilename(args.logdir)
+        subword_net.collect_params().save(p)
+        os.replace(p, os.path.join(args.logdir, 'subword_net'))
