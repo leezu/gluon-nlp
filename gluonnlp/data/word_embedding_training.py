@@ -208,9 +208,7 @@ class _WordEmbeddingDataset(Dataset):
         idx_to_subwordidxs = np.stack(
             np.pad(b, (0, max_subwordidxs_len - len(b)
                        ), constant_values=-1, mode='constant')
-            for b in idx_to_subwordidxs)
-
-        assert idx_to_subwordidxs.dtype == np.int
+            for b in idx_to_subwordidxs).astype(np.int)
 
         self.idx_to_counts = idx_to_counts
         self.idx_to_subwordidxs = idx_to_subwordidxs

@@ -65,6 +65,7 @@ def get_args():
         help=('Network architecture to infer subword level embeddings. ' +
               str(subword.list_subwordnetworks()) +
               ' , fasttext or empty to disable'))
+    group.add_argument('--subword-function', type=str, default='character')
     group.add_argument('--objective', type=str, default='skipgram',
                        help='Word embedding training objective.')
     group.add_argument('--emsize', type=int, default=300,

@@ -273,7 +273,11 @@ def _get_train_dataset(args, vocab, coded, sentence_boundaries=None):
         #         coded, idx_to_counts)
         if args.subword_network.lower() != 'fasttext':
             with utils.print_time('create subword vocabulary'):
-                subword_function = nlp.vocab.create('ByteSubwords')
+                if args.subword_function.lower() == 'byte':
+                    subword_function = nlp.vocab.create('ByteSubwords')
+                elif args.subword_function.lower() == 'character':
+                    subword_function = nlp.vocab.create(
+                        'CharacterSubwords', vocabulary=vocab)
                 subword_vocab = nlp.SubwordVocab(
                     idx_to_token=vocab.idx_to_token,
                     subword_function=subword_function, merge_indices=False)

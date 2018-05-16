@@ -632,6 +632,54 @@ class ByteSubwords(_SubwordFunction):
 
 
 @register
+class CharacterSubwords(_SubwordFunction):
+    def __init__(self, vocabulary, min_freq=10):
+        character_counter = collections.Counter(
+            itertools.chain.from_iterable(vocabulary.idx_to_token))
+        num_all_characters = len(character_counter)
+        for character, count in character_counter.most_common():
+            if count < min_freq:
+                del character_counter[character]
+        logging.info('Constructing subword vocabulary based on ngrams. '
+                     f'Keeping {len(character_counter)} of '
+                     f'{num_all_characters} characters.')
+        assert sys.version_info >= (3, 6), 'Only Python 3.6+ supported. ' \
+            'We rely on it\'s property of preserving '\
+            'dictionary insertion order.'
+        character_enumeration = enumerate(character_counter.most_common())
+
+        self.subword_to_subwordidx = {
+            w: i
+            for i, (w, _) in character_enumeration
+        }
+        # Requires Py3.6+
+        self.subwordidx_to_subword = list(self.subword_to_subwordidx.keys())
+
+        # Information for __repr__
+        self.vocabulary_repr = repr(vocabulary)
+
+    def __call__(self, words):
+        generator = (np.array([
+            self.subword_to_subwordidx[c] for c in word
+            if c in self.subword_to_subwordidx
+        ]) for word in words)
+        return generator
+
+    def __len__(self):
+        return len(self.subwordidx_to_subword)
+
+    def __repr__(self):
+        return ('CharacterSubwords(vocabulary={})'.format(
+            self.vocabulary_repr))
+
+    def indices_to_subwords(self, indices):
+        return [self.subwordidx_to_subword[i] for i in indices]
+
+    def subwords_to_indices(self, subwords):
+        return [self.subword_to_subwordidx[w] for w in subwords]
+
+
+@register
 class NGramSubwords(_SubwordFunction):
     def __init__(self, vocabulary, max_num_subwords, ngrams=[3, 4, 5, 6]):
         self.ngrams = ngrams
