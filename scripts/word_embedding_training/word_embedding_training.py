@@ -115,8 +115,10 @@ def get_args():
                        help='Learning rate for embeddings matrix.')
     group.add_argument('--dense-lr', type=float, default=0.02,
                        help='Learning rate for subword embedding network.')
+    group.add_argument('--dense-optimizer', type=str, default='adam',
+                       help='Optimizer used to train subword network.')
     group.add_argument('--dense-momentum', type=float, default=0.9,
-                       help='Momentum for subword embedding network.')
+                       help='Momentum for dense-optimizer, if supported.')
     # Logging options
     group = parser.add_argument_group('Logging arguments')
     group.add_argument('--logdir', type=str, default=None,
@@ -225,10 +227,18 @@ def train(args):
 
     if subword_net is not None:
         dense_params = list(subword_net.collect_params().values())
-        dense_trainer = gluon.Trainer(dense_params, 'sgd', {
-            'learning_rate': args.dense_lr,
-            'momentum': args.dense_momentum
-        })
+        if args.dense_optimizer.lower() == 'sgd':
+            dense_trainer = gluon.Trainer(dense_params, args.dense_optimizer, {
+                'learning_rate': args.dense_lr,
+                'momentum': args.dense_momentum
+            })
+        elif args.dense_optimizer.lower() in ['adam', 'adagrad']:
+            dense_trainer = gluon.Trainer(dense_params, args.dense_optimizer, {
+                'learning_rate': args.dense_lr,
+            })
+        else:
+            logging.error('Unsupported optimizer')
+            sys.exit(1)
 
     # Auxilary states for group lasso objective
     last_update_buffer = mx.nd.zeros((train_dataset.num_tokens, ),
