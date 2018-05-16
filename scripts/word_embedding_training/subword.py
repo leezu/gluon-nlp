@@ -46,7 +46,7 @@ def _subwordrnn_args(parser):
     group = parser.add_argument_group('SubwordRNN hyperparameters.')
     group.add_argument('--subwordrnn-mode', type=str, default='gru')
     group.add_argument('--subwordrnn-hidden-size', type=int, default=150)
-    group.add_argument('--subwordrnn-num-layers', type=int, default=2)
+    group.add_argument('--subwordrnn-num-layers', type=int, default=1)
     group.add_argument('--subwordrnn-encoder-dropout', type=float, default=0.0)
     group.add_argument('--subwordrnn-no-bidirectional', default=False,
                        action='store_true')

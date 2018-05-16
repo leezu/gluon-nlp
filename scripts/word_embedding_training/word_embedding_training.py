@@ -102,6 +102,8 @@ def get_args():
                              'If not specified, uses CPU.'))
     group.add_argument('--dont-hybridize', action='store_true',
                        help='Disable hybridization of gluon HybridBlocks.')
+    group.add_argument('--no-normalize-embeddings', action='store_true',
+                       help='Normalize the word embeddings row-wise.')
     group.add_argument('--normalize-gradient', type=str, default='count',
                        help='Normalize the word embedding gradient row-wise. '
                        'Supported are [None, count, L2].')
@@ -113,8 +115,10 @@ def get_args():
     group = parser.add_argument_group('Optimization arguments')
     group.add_argument('--embeddings-lr', type=float, default=0.1,
                        help='Learning rate for embeddings matrix.')
-    group.add_argument('--dense-lr', type=float, default=0.02,
+    group.add_argument('--dense-lr', type=float, default=0.1,
                        help='Learning rate for subword embedding network.')
+    group.add_argument('--dense-wd', type=float, default=1.2e-6,
+                       help='Weight decay for subword embedding network.')
     group.add_argument('--dense-optimizer', type=str, default='adam',
                        help='Optimizer used to train subword network.')
     group.add_argument('--dense-momentum', type=float, default=0.9,
@@ -226,16 +230,19 @@ def train(args):
     context = utils.get_context(args)
 
     if subword_net is not None:
-        dense_params = list(subword_net.collect_params().values())
         if args.dense_optimizer.lower() == 'sgd':
-            dense_trainer = gluon.Trainer(dense_params, args.dense_optimizer, {
-                'learning_rate': args.dense_lr,
-                'momentum': args.dense_momentum
-            })
+            dense_trainer = gluon.Trainer(
+                subword_net.collect_params(), args.dense_optimizer, {
+                    'learning_rate': args.dense_lr,
+                    'wd': args.dense_wd,
+                    'momentum': args.dense_momentum
+                })
         elif args.dense_optimizer.lower() in ['adam', 'adagrad']:
-            dense_trainer = gluon.Trainer(dense_params, args.dense_optimizer, {
-                'learning_rate': args.dense_lr,
-            })
+            dense_trainer = gluon.Trainer(subword_net.collect_params(),
+                                          args.dense_optimizer, {
+                                              'learning_rate': args.dense_lr,
+                                              'wd': args.dense_wd,
+                                          })
         else:
             logging.error('Unsupported optimizer')
             sys.exit(1)
@@ -293,8 +300,8 @@ def train(args):
                 even_split=False)
             unique_sources_subwordsequences_last_valid = \
                 gluon.utils.split_and_load(
-                unique_sources_subwordsequences_last_valid, context,
-                even_split=False)
+                    unique_sources_subwordsequences_last_valid,
+                    context, even_split=False)
 
             with mx.autograd.record():
                 if subword_net is not None:
@@ -342,14 +349,31 @@ def train(args):
                 if embedding_in is not None:
                     word_embeddings = embedding_in(source)
                     if subword_net is not None:
-                        emb_in = subword_embeddings + word_embeddings
+                        # Warning: L2Normalization is only correct as emb_in
+                        # only has 1 element in middle dim (bs, 1, emsize)
+                        if not args.no_normalize_embeddings:
+                            emb_in = mx.nd.L2Normalization(subword_embeddings)\
+                                + mx.nd.L2Normalization(word_embeddings)
+                        else:
+                            emb_in = subword_embeddings + word_embeddings
                     else:
-                        emb_in = word_embeddings
+                        if not args.no_normalize_embeddings:
+                            emb_in = mx.nd.L2Normalization(word_embeddings)
+                        else:
+                            emb_in = word_embeddings
                 else:
                     assert subword_net is not None
-                    emb_in = subword_embeddings
+                    if not args.no_normalize_embeddings:
+                        emb_in = mx.nd.L2Normalization(subword_embeddings)
+                    else:
+                        emb_in = subword_embeddings
 
                 emb_out = embedding_out(target)
+                if not args.no_normalize_embeddings:
+                    emb_out_shape = emb_out.shape
+                    emb_out = mx.nd.L2Normalization(
+                        emb_out.reshape((-1,
+                                         args.emsize))).reshape(emb_out_shape)
 
                 pred = mx.nd.batch_dot(emb_in, emb_out.swapaxes(1, 2))
                 if (subword_net is not None
@@ -364,7 +388,8 @@ def train(args):
 
             # Training of dense params
             if subword_net is not None:
-                dense_trainer.step(batch_size=args.batch_size)
+                # dense_trainer.step(batch_size=args.batch_size)  # TODO
+                dense_trainer.step(batch_size=1)
 
             # Training of token level embeddings with sparsity objective
             if embedding_in is not None:
