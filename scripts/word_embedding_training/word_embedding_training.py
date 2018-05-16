@@ -368,6 +368,13 @@ def train(args):
                         sw.add_histogram(tag='grad-' + str(k),
                                          values=v.grad(ctx=context[0]),
                                          global_step=current_update, bins=200)
+
+                        # Predicted word embeddings
+                        sw.add_histogram(
+                            tag='subword_embedding_in_norm',
+                            values=subword_embedding_weights.norm(axis=1),
+                            global_step=current_update, bins=200)
+
                 # Embedding out
                 embedding_out_norm = embedding_out.weight.data(
                     ctx=context[0]).as_in_context(
