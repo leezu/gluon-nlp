@@ -25,16 +25,17 @@ This example shows how to train word embeddings.
 
 import math
 import multiprocessing as mp
-from concurrent.futures import ThreadPoolExecutor
 
 import mxnet as mx
 import numpy as np
+from mxboard import SummaryWriter
 import tqdm
 from mxnet import gluon
 
 import data
 import evaluation
 import utils
+import bounded_executor
 
 try:
     import tqdm
@@ -66,8 +67,9 @@ def get_model(args, train_dataset, subword_vocab):
 
     loss = gluon.loss.SigmoidBinaryCrossEntropyLoss()
 
-    embedding_in.hybridize()
-    embedding_out.hybridize()
+    if not args.dont_hybridize:
+        embedding_in.hybridize()
+        embedding_out.hybridize()
 
     return embedding_in, embedding_out, loss
 
@@ -81,31 +83,38 @@ def train(args):
         args, train_dataset, subword_vocab)
     context = utils.get_context(args)
 
-    sparse_params = list(embedding_in.collect_params().values()) + list(
-        embedding_out.collect_params().values())
-
     # Auxilary states for group lasso objective
     last_update_buffer = mx.nd.zeros(
         (train_dataset.num_tokens + len(subword_vocab), ), ctx=context[0])
     current_update = 1
 
+    # Logging writer
+    sw = SummaryWriter(logdir=args.logdir)
+
     indices = np.arange(len(train_dataset))
     for epoch in range(args.epochs):
         np.random.shuffle(indices)
-        batches = [
-            indices[i:i + args.batch_size]
-            for i in range(0, len(indices), args.batch_size)
-        ]
+        with utils.print_time('create batch indices'):
+            batches = [
+                indices[i:i + args.batch_size]
+                for i in range(0, len(indices), args.batch_size)
+            ]
 
         if tqdm is not None:
             t = tqdm.trange(len(batches), smoothing=1)
         else:
             t = range(len(batches))
 
-        num_workers = math.ceil(mp.cpu_count() * 0.8)
-        executor = ThreadPoolExecutor(max_workers=num_workers)
-        for i, (source, target, label, subword_mask) in zip(
-                t, executor.map(train_dataset.__getitem__, batches)):
+        if args.use_threaded_data_workers:
+            executor = bounded_executor.BoundedExecutor(
+                bound=100, max_workers=args.num_data_workers)
+            batches = executor.map(train_dataset.__getitem__, batches)
+        for i, batch in zip(t, batches):
+            if not args.use_threaded_data_workers:
+                batch = train_dataset[batch]
+            (source, target, label, subword_mask, unique_sources_indices,
+             unique_sources_counts, unique_targets_indices,
+             unique_targets_counts) = batch
             source = mx.nd.array(source, ctx=context[0])
             target = mx.nd.array(target, ctx=context[0])
             label = mx.nd.array(label, ctx=context[0])
@@ -123,39 +132,85 @@ def train(args):
 
             loss.backward()
 
-            utils.train_embedding(args, embedding_in.weight.data(context[0]),
-                                  embedding_in.weight.grad(
-                                      context[0]), with_sparsity=True,
-                                  last_update_buffer=last_update_buffer,
-                                  current_update=current_update)
-            current_update += 1
+            if i % args.eval_interval == 0:
+                lazy_update = False  # Force eager update before evaluation
+            else:
+                lazy_update = True
+            emb_in_grad_normalization = mx.nd.sparse.row_sparse_array(
+                (unique_sources_counts.reshape(
+                    (-1, 1)), unique_sources_indices), ctx=context[0],
+                dtype=np.float32)
+            utils.train_embedding(
+                args, embedding_in.weight.data(context[0]),
+                embedding_in.weight.grad(
+                    context[0]), emb_in_grad_normalization, with_sparsity=True,
+                last_update_buffer=last_update_buffer,
+                current_update=current_update, lazy_update=lazy_update)
+            # Training of emb_out
+            emb_out_grad_normalization = mx.nd.sparse.row_sparse_array(
+                (unique_targets_counts.reshape(
+                    (-1, 1)), unique_targets_indices), ctx=context[0],
+                dtype=np.float32)
             utils.train_embedding(args, embedding_out.weight.data(context[0]),
-                                  embedding_out.weight.grad(context[0]))
+                                  embedding_out.weight.grad(context[0]),
+                                  emb_out_grad_normalization)
+
+            current_update += 1
 
             if i % args.eval_interval == 0:
+                with utils.print_time('mx.nd.waitall()'):
+                    mx.nd.waitall()
+
+                # Mxboard
+                # Embedding in
+                embedding_in_norm = embedding_in.weight.data(
+                    ctx=context[0]).as_in_context(
+                        mx.cpu()).tostype("default").norm(axis=1)
+                sw.add_histogram(tag='embedding_in_word_norm',
+                                 values=embedding_in_norm[:len(vocab)],
+                                 global_step=current_update, bins=200)
+                sw.add_histogram(tag='embedding_in_subword_norm',
+                                 values=embedding_in_norm[:len(vocab)],
+                                 global_step=current_update, bins=200)
+                embedding_in_grad = embedding_in.weight.grad(
+                    ctx=context[0]).as_in_context(
+                        mx.cpu()).tostype("default").norm(axis=1)
+                sw.add_histogram(tag='embedding_in_word_grad',
+                                 values=embedding_in_grad[:len(vocab)],
+                                 global_step=current_update, bins=200)
+                sw.add_histogram(tag='embedding_in_subword_grad',
+                                 values=embedding_in_grad[len(vocab):],
+                                 global_step=current_update, bins=200)
+                # Embedding out
+                embedding_out_norm = embedding_out.weight.data(
+                    ctx=context[0]).as_in_context(
+                        mx.cpu()).tostype("default").norm(axis=1)
+                sw.add_histogram(tag='embedding_out_norm',
+                                 values=embedding_out_norm,
+                                 global_step=current_update, bins=200)
+                embedding_out_grad = embedding_out.weight.grad(
+                    ctx=context[0]).as_in_context(
+                        mx.cpu()).tostype("default").norm(axis=1)
+                sw.add_histogram(tag='embedding_out_grad',
+                                 values=embedding_out_grad,
+                                 global_step=current_update, bins=200)
+
+                # Scalars
+                sw.add_scalar(tag='loss', value=loss.mean().asscalar(),
+                              global_step=current_update)
+
                 eval_dict = evaluation.evaluate(args, embedding_in, None,
-                                                vocab, subword_vocab)
+                                                vocab, subword_vocab, sw)
+                for k, v in eval_dict.items():
+                    sw.add_scalar(tag=k, value=float(v),
+                                  global_step=current_update)
 
-                t.set_postfix(
-                    # TODO print number of grad norm > 0
-                    loss=loss.sum().asscalar(),
-                    grad=embedding_in.weight.grad(context[0]).as_in_context(
-                        mx.cpu()).norm().asscalar(),
-                    data=embedding_in.weight.data(
-                        ctx=context[0]).as_in_context(
-                            mx.cpu()).tostype("default").norm(
-                                axis=1).mean().asscalar(),
-                    **eval_dict)
+                sw.flush()
 
-        # Force eager gradient update at end of every epoch
-        param_data = embedding_in.weight.data(ctx=context[0])
-        mx.nd.sparse.sgd_update(
-            weight=param_data, grad=mx.nd.sparse.row_sparse_array(
-                param_data.shape,
-                ctx=context[0]), last_update_buffer=last_update_buffer,
-            lr=args.embeddings_lr, sparsity=args.sparsity_lambda,
-            current_update=current_update, out=param_data)
-        current_update += 1
+                # Save params after evaluation
+                utils.save_params(args, embedding_in, embedding_out, None,
+                                  current_update)
 
-        # Shut down ThreadPoolExecutor
-        executor.shutdown()
+        # Shut down data preloading executor
+        if args.use_threaded_data_workers:
+            executor.shutdown()

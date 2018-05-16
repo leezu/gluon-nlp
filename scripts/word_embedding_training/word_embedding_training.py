@@ -110,6 +110,10 @@ def get_args():
     group.add_argument(
         '--force-py-op-normalize-gradient', action='store_true',
         help='Always use Python sparse L2 normalization operator.')
+    group.add_argument('--use-threaded-data-workers', action='store_true',
+                       help='Enable threaded data pre-fetching.')
+    group.add_argument('--num-data-workers', type=int, default=5,
+                       help='Number of threads to preload data.')
 
     # Optimization options
     group = parser.add_argument_group('Optimization arguments')

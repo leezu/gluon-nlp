@@ -306,9 +306,9 @@ def _get_train_dataset(args, vocab, coded, sentence_boundaries=None):
                     idx_to_token=vocab.idx_to_token,
                     subword_function=subword_function, merge_indices=True)
             with utils.print_time('create skipgram dataset'):
-                dataset = nlp.data.SkipGramWordEmbeddingDataset(
+                dataset = nlp.data.SkipGramFasttextWordEmbeddingDataset(
                     coded=coded, idx_to_counts=idx_to_counts,
-                    subword_vocab=subword_vocab, min_size=min_size,
+                    subword_vocab=subword_vocab, min_size=1,
                     sentence_boundaries=sentence_boundaries)
     else:
         raise NotImplementedError('Objective {} not implemented.'.format(
