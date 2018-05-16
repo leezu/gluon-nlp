@@ -219,13 +219,31 @@ def evaluate_similarity(args, vocab, subword_vocab, embedding_in, subword_net,
     return sr.correlation, len(dataset)
 
 
-def evaluate_num_zero_rows(args, embedding_in, eps=1E-5):
+def evaluate_num_zero_rows(args, embedding_in, vocab, subword_vocab, eps=1E-5):
     context = utils.get_context(args)
     token_idx_to_vec = embedding_in.weight.data(ctx=context[0]).as_in_context(
         mx.cpu()).data
     embedding_norm = mx.nd.norm(token_idx_to_vec, axis=1)
-    num_zero_rows = mx.nd.sum(embedding_norm < eps).asscalar()
-    return num_zero_rows, embedding_norm.shape[0]
+    if args.subword_network.lower() != 'fasttext':
+        assert len(vocab) == embedding_norm.shape[0]
+        num_zero_word_vectors = mx.nd.sum(embedding_norm < eps).asscalar()
+        return {
+            'zero_word_vectors': num_zero_word_vectors,
+            'nonzero_word_vectors': len(vocab) - num_zero_word_vectors
+        }
+    else:
+        assert len(vocab) + len(subword_vocab) == embedding_norm.shape[0]
+        num_zero_word_vectors = mx.nd.sum(
+            embedding_norm[:len(vocab)] < eps).asscalar()
+        num_zero_subword_vectors = mx.nd.sum(
+            embedding_norm[len(vocab):] < eps).asscalar()
+        return {
+            'zero_word_vectors': num_zero_word_vectors,
+            'nonzero_word_vectors': len(vocab) - num_zero_word_vectors,
+            'zero_subword_vectors': num_zero_subword_vectors,
+            'nonzero_subword_vectors':
+            len(subword_vocab) - num_zero_word_vectors
+        }
 
 
 def evaluate(args, embedding_in, subword_net, vocab, subword_vocab,
@@ -257,13 +275,8 @@ def evaluate(args, embedding_in, subword_net, vocab, subword_vocab,
                           + dataset_name_wkwargs] = num_words
 
     if embedding_in is not None:
-        num_zero_rows, num_total_rows = evaluate_num_zero_rows(
-            args, embedding_in)
-        return {
-            'Zero': num_zero_rows / num_total_rows,
-            'Total': num_total_rows,
+        eval_dict = {
+            **evaluate_num_zero_rows(args, embedding_in, vocab, subword_vocab),
             **eval_dict
         }
-
-    else:
-        return eval_dict
+    return eval_dict
