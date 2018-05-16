@@ -26,6 +26,7 @@ import mxnet as mx
 from mxnet import gluon
 
 import gluonnlp as nlp
+import self_attention
 
 
 ###############################################################################
@@ -33,7 +34,7 @@ import gluonnlp as nlp
 ###############################################################################
 def add_subword_parameters_to_parser(parser):
     group = parser.add_argument_group('Subword networks hyperparameters')
-    group.add_argument('--subword-embedding-size', type=int, default=32,
+    group.add_argument('--subword-embedding-size', type=int, default=20,
                        help='Embedding size for each subword piece.')
     group.add_argument('--subword-embedding-dropout', type=float, default=0.0,
                        help='Embedding size for each subword piece.')
@@ -44,10 +45,24 @@ def add_subword_parameters_to_parser(parser):
 def _subwordrnn_args(parser):
     group = parser.add_argument_group('SubwordRNN hyperparameters.')
     group.add_argument('--subwordrnn-mode', type=str, default='gru')
-    group.add_argument('--subwordrnn-hidden-size', type=int, default=128)
-    group.add_argument('--subwordrnn-num-layers', type=int, default=3)
+    group.add_argument('--subwordrnn-hidden-size', type=int, default=150)
+    group.add_argument('--subwordrnn-num-layers', type=int, default=2)
     group.add_argument('--subwordrnn-encoder-dropout', type=float, default=0.0)
-    group.add_argument('--subwordrnn-bidirectional', type=bool, default=True)
+    group.add_argument('--subwordrnn-no-bidirectional', default=False,
+                       action='store_true')
+    group.add_argument('--subwordrnn-self-attention', default=False,
+                       action='store_true',
+                       help='If True, use self-attention on RNN states '
+                       'to compute word embedding. '
+                       'Otherwise use final states.')
+    group.add_argument('--subwordrnn-self-attention-num-units', type=int,
+                       default=350)
+    group.add_argument('--subwordrnn-self-attention-num-attention', type=int,
+                       default=10)
+    group.add_argument('--subwordrnn-self-attention-dropout', type=float,
+                       default=0.0)
+    group.add_argument('--attention-regularizer-lambda', type=float,
+                       default=1.0)
 
 
 ###############################################################################
@@ -88,8 +103,14 @@ def create(name, args, **kwargs):
         kwargs = dict(
             mode=args.subwordrnn_mode, hidden_size=args.subwordrnn_hidden_size,
             num_layers=args.subwordrnn_num_layers,
-            bidirectional=args.subwordrnn_bidirectional,
-            encoder_dropout=args.subwordrnn_encoder_dropout, **kwargs)
+            bidirectional=not args.subwordrnn_no_bidirectional,
+            encoder_dropout=args.subwordrnn_encoder_dropout,
+            use_self_attention=args.subwordrnn_self_attention,
+            self_attention_num_units=args.subwordrnn_self_attention_num_units,
+            self_attention_num_attention=args.
+            subwordrnn_self_attention_num_attention,
+            self_attention_dropout=args.subwordrnn_self_attention_dropout,
+            **kwargs)
     else:
         raise NotImplementedError
 
@@ -138,16 +159,22 @@ class SubwordRNN(SubwordNetwork):
         number of distinct bytes.
     dropout : float  # TODO
         Dropout rate to use for encoder output.
+    use_self_attention : bool
+        Use self attention to combine time-steps to a word embedding. Otherwise
+        use final state.
 
     """
 
     def __init__(self, mode, embed_size, hidden_size, output_size, num_layers,
-                 embedding_dropout, bidirectional, encoder_dropout,
-                 vocab_size=256, **kwargs):
+                 embedding_dropout, bidirectional, encoder_dropout, vocab_size,
+                 use_self_attention, self_attention_num_units,
+                 self_attention_num_attention, self_attention_dropout,
+                 embedding_initializer=mx.init.Uniform(), **kwargs):
         super(SubwordRNN, self).__init__(**kwargs)
         # Embedding
         self.vocab_size = vocab_size
         self.embedding_dropout = embedding_dropout
+        self.embedding_initializer = embedding_initializer
 
         # Encoder
         self.mode = mode
@@ -157,20 +184,30 @@ class SubwordRNN(SubwordNetwork):
         self.num_layers = num_layers
         self.encoder_dropout = encoder_dropout
 
+        self.use_self_attention = use_self_attention
+        self.self_attention_num_units = self_attention_num_units
+        self.self_attention_num_attention = self_attention_num_attention
+        self.self_attention_dropout = self_attention_dropout
+
         # Output
         self.output_size = output_size
 
         with self.name_scope():
             self.embedding = self._get_embedding()
             self.encoder = self._get_encoder()
+            self.rnn_to_rep = gluon.nn.Dense(self.output_size, flatten=False,
+                                             activation='tanh')
+            if self.use_self_attention:
+                self.attention = self._get_self_attention()
             self.decoder = self._get_decoder()
 
     def _get_embedding(self):
         embedding = gluon.nn.HybridSequential()
         with embedding.name_scope():
             embedding.add(
-                gluon.nn.Embedding(self.vocab_size, self.embed_size,
-                                   weight_initializer=mx.init.Uniform(0.1)))
+                gluon.nn.Embedding(
+                    self.vocab_size, self.embed_size,
+                    weight_initializer=self.embedding_initializer))
             if self.embedding_dropout:
                 embedding.add(gluon.nn.Dropout(self.embedding_dropout))
 
@@ -195,24 +232,27 @@ class SubwordRNN(SubwordNetwork):
         return rnn
 
     def _get_decoder(self):
-        output = gluon.nn.HybridSequential()
-        with output.name_scope():
-            output.add(gluon.nn.Dense(self.output_size, flatten=True))
-        return output
+        return gluon.nn.Dense(self.output_size, flatten=True)
+
+    def _get_self_attention(self):
+        return self_attention.StructuredSelfAttentionCell(
+            units=self.self_attention_num_units,
+            num_attention=self.self_attention_num_attention,
+            dropout=self.self_attention_dropout)
 
     def begin_state(self, *args, **kwargs):
         return self.encoder.begin_state(*args, **kwargs)
 
-    def forward(self, inputs, mask, begin_state=None):
+    def forward(self, inputs, mask, last_valid, begin_state=None):
         """Defines the forward computation. Arguments can be either
         :py:class:`NDArray` or :py:class:`Symbol`."""
         F = mx.nd
         embeddings = self.embedding(inputs)
 
         # Switch mask from NT to TN
-        mask = F.transpose(mask)
+        mask_tn = F.transpose(mask)
         masked_embeddings = F.broadcast_mul(embeddings,
-                                            F.expand_dims(mask, axis=-1))
+                                            F.expand_dims(mask_tn, axis=-1))
 
         if begin_state is None:
             begin_state = self.begin_state(batch_size=embeddings.shape[1],
@@ -220,11 +260,24 @@ class SubwordRNN(SubwordNetwork):
 
         encoded, states = self.encoder(masked_embeddings, begin_state)
 
-        # Switch states to NT
-        assert len(states) == 1
-        states = states[0].swapaxes(0, 1)
-        out = self.decoder(states)
-        return out
+        if self.use_self_attention:
+            # Switch outputs to NTC
+            rep = self.rnn_to_rep(encoded)
+            rep = rep.swapaxes(0, 1)
+            attention_mask = mask.expand_dims(-2).broadcast_to(
+                (mask.shape[0], self.self_attention_num_attention,
+                 mask.shape[1]))
+            context_vec, att_weights = self.attention(rep, attention_mask)
+            # Combine multiple attentions
+            out = self.decoder(context_vec)
+            return out, att_weights
+        else:
+            assert len(states) == 1
+            enc = encoded[last_valid,
+                          mx.nd.arange(inputs.shape[0], ctx=inputs.context)]
+            rep = self.rnn_to_rep(enc)
+            out = self.decoder(rep)
+            return out, None
 
 
 @register

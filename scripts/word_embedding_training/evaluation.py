@@ -91,12 +91,20 @@ def construct_vocab_embedding_for_dataset(args, tokens, vocab, embedding_in,
             known_tokens_subwordindices_np, ctx=context[0])
         known_tokens_subword_indices_mask_nd = mx.nd.array(
             known_tokens_subwordindices_mask_np, ctx=context[0])
+        known_tokens_subword_indices_last_valid = \
+                (known_tokens_subwordindices_mask_np == 0).argmax(axis=1) - 1
+        known_tokens_subword_indices_last_valid[
+            known_tokens_subword_indices_last_valid ==
+            -1] = known_tokens_subwordindices_mask_np.shape[1] - 1
+        known_tokens_subword_indices_last_valid_nd = mx.nd.array(
+            known_tokens_subword_indices_last_valid, ctx=context[0])
 
         # 3. Compute
         if subword_net is not None:
-            token_subword_embeddings = subword_net(
+            token_subword_embeddings, _ = subword_net(
                 known_tokens_subword_indices_nd,
-                known_tokens_subword_indices_mask_nd)
+                known_tokens_subword_indices_mask_nd,
+                known_tokens_subword_indices_last_valid_nd)
         else:  # Subword indices should be applicable for embedding_in
             subword_embeddings = embedding_in(known_tokens_subword_indices_nd)
             masked_subword_embeddings = mx.nd.broadcast_mul(

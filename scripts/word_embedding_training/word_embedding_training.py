@@ -171,7 +171,7 @@ def setup_logging(args):
 ###############################################################################
 # Build the model
 ###############################################################################
-def get_model(args, train_dataset):
+def get_model(args, train_dataset, subword_vocab):
     assert not (args.no_token_embedding and not args.subword_network)
     num_tokens = train_dataset.num_tokens
     context = utils.get_context(args)
@@ -199,7 +199,8 @@ def get_model(args, train_dataset):
         embedding_in = None
 
     if args.subword_network:
-        subword_net = subword.create(name=args.subword_network, args=args)
+        subword_net = subword.create(name=args.subword_network, args=args,
+                                     vocab_size=len(subword_vocab))
         subword_net.initialize(mx.init.Xavier(), ctx=context)
 
         if not args.dont_hybridize:
@@ -218,7 +219,7 @@ def get_model(args, train_dataset):
 def train(args):
     train_dataset, vocab, subword_vocab = data.get_train_data(args)
     embedding_in, embedding_out, subword_net, loss_function = get_model(
-        args, train_dataset)
+        args, train_dataset, subword_vocab)
     context = utils.get_context(args)
 
     if subword_net is not None:
@@ -257,6 +258,12 @@ def train(args):
              source_subword, unique_sources_subwordsequences_mask,
              unique_targets_indices, unique_targets_counts) = batch
 
+            unique_sources_subwordsequences_last_valid = \
+                (unique_sources_subwordsequences_mask == 0).argmax(axis=1) - 1
+            unique_sources_subwordsequences_last_valid[
+                unique_sources_subwordsequences_last_valid ==
+                -1] = unique_sources_subwordsequences_mask.shape[1] - 1
+
             mx.nd.waitall()
 
             # Load data for training embedding matrix to context[0]
@@ -268,26 +275,53 @@ def train(args):
             source_subword = mx.nd.array(source_subword, ctx=context[0])
 
             # Split and load subword info to all GPUs for accelerated computation
-            assert unique_sources_subwordsequences.shape == unique_sources_subwordsequences_mask.shape
+            assert unique_sources_subwordsequences.shape == \
+                unique_sources_subwordsequences_mask.shape
             unique_token_subwordsequences = gluon.utils.split_and_load(
-                unique_sources_subwordsequences, context, batch_axis=1,
-                even_split=False)
+                unique_sources_subwordsequences, context, even_split=False)
             unique_sources_subwordsequences_mask = gluon.utils.split_and_load(
-                unique_sources_subwordsequences_mask, context, batch_axis=1,
+                unique_sources_subwordsequences_mask, context,
+                even_split=False)
+            unique_sources_subwordsequences_last_valid = \
+                gluon.utils.split_and_load(
+                unique_sources_subwordsequences_last_valid, context,
                 even_split=False)
 
             with mx.autograd.record():
                 if subword_net is not None:
                     # Compute subword embeddings from subword info (byte sequences)
                     subword_embedding_weights = []
-                    for subwordsequences_ctx, mask_ctx in zip(
+                    attention_regularizers = []
+                    for subwordsequences_ctx, mask_ctx, last_valid_ctx in zip(
                             unique_token_subwordsequences,
-                            unique_sources_subwordsequences_mask):
+                            unique_sources_subwordsequences_mask,
+                            unique_sources_subwordsequences_last_valid):
+                        out, att_weights = subword_net(
+                            subwordsequences_ctx, mask_ctx, last_valid_ctx)
+                        if att_weights is not None:
+                            attention_regularizer = mx.nd.sqrt(
+                                mx.nd.sum((mx.nd.batch_dot(
+                                    att_weights, att_weights.swapaxes(1, 2)
+                                ) - mx.nd.eye(
+                                    args.
+                                    subwordrnn_self_attention_num_attention,
+                                    ctx=att_weights.context))**2))
+                            attention_regularizers.append(
+                                attention_regularizer.as_in_context(
+                                    context[0]))
+
+                        # TODO check if the gradient is actually passed when switching device
                         subword_embedding_weights.append(
-                            subword_net(subwordsequences_ctx,
-                                        mask_ctx).as_in_context(context[0]))
+                            out.as_in_context(context[0]))
                     subword_embedding_weights = mx.nd.concat(
                         *subword_embedding_weights, dim=0)
+
+                    # TODO remove
+                    if attention_regularizers:
+                        attention_regularizers = mx.nd.sum(
+                            mx.nd.concat(*attention_regularizers, dim=0))
+                    else:
+                        attention_regularizers = None
 
                     # Look up subword embeddings of batch
                     subword_embeddings = mx.nd.Embedding(
@@ -309,7 +343,13 @@ def train(args):
                 emb_out = embedding_out(target)
 
                 pred = mx.nd.batch_dot(emb_in, emb_out.swapaxes(1, 2))
-                loss = loss_function(pred, label)
+                if (subword_net is not None
+                        and attention_regularizers is not None):
+                    loss = loss_function(
+                        pred, label) + (args.attention_regularizer_lambda *
+                                        mx.nd.sum(attention_regularizers))
+                else:
+                    loss = loss_function(pred, label)
 
             loss.backward()
 
