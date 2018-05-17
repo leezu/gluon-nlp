@@ -62,12 +62,17 @@ def get_args():
                        'Only use subword units.')
     group.add_argument(
         '--subword-network', type=str, default='', nargs='?',
-        help=('Network architecture to infer subword level embeddings. ' +
+        help=('Network architecture to encode subword level information. ' +
               str(subword.list_subwordnetworks()) +
               ' , fasttext or empty to disable'))
+    group.add_argument(
+        '--embedding-network', default='SelfAttentionEmbedding',
+        help='Network architecture to create embedding from encoded subwords.')
     group.add_argument('--subword-function', type=str, default='character')
     group.add_argument('--objective', type=str, default='skipgram',
                        help='Word embedding training objective.')
+    group.add_argument('--auxilary-task', action='store_true',
+                       help='Use auxilary word prediction task.')
     group.add_argument('--emsize', type=int, default=300,
                        help='Size of word embeddings')
     group.add_argument(
@@ -182,7 +187,7 @@ def setup_logging(args):
 ###############################################################################
 # Build the model
 ###############################################################################
-def get_model(args, train_dataset, subword_vocab):
+def get_model(args, train_dataset, vocab, subword_vocab):
     assert not (args.no_token_embedding and not args.subword_network)
     num_tokens = train_dataset.num_tokens
     context = utils.get_context(args)
@@ -213,15 +218,31 @@ def get_model(args, train_dataset, subword_vocab):
         subword_net = subword.create(name=args.subword_network, args=args,
                                      vocab_size=len(subword_vocab))
         subword_net.initialize(mx.init.Xavier(), ctx=context)
+        embedding_net = subword.create(name=args.embedding_network, args=args)
+        embedding_net.initialize(mx.init.Orthogonal(), ctx=context)
 
         if not args.dont_hybridize:
             subword_net.hybridize()
+            embedding_net.hybridize()
+
+        if args.auxilary_task:
+            auxilary_task_net = subword.create(
+                name='WordPrediction', vocab_size=len(vocab), args=args)
+            auxilary_task_net.initialize(mx.init.Orthogonal(), ctx=context)
+            if not args.dont_hybridize:
+                auxilary_task_net
+        else:
+            auxilary_task_net = None
+
     else:
         subword_net = None
+        embedding_net = None
 
     loss = gluon.loss.SigmoidBinaryCrossEntropyLoss()
+    aux_loss = gluon.loss.SoftmaxCrossEntropyLoss()
 
-    return embedding_in, embedding_out, subword_net, loss
+    return (embedding_in, embedding_out, subword_net, embedding_net,
+            auxilary_task_net, loss, aux_loss)
 
 
 ###############################################################################
@@ -229,8 +250,9 @@ def get_model(args, train_dataset, subword_vocab):
 ###############################################################################
 def train(args):
     train_dataset, vocab, subword_vocab = data.get_train_data(args)
-    embedding_in, embedding_out, subword_net, loss_function = get_model(
-        args, train_dataset, subword_vocab)
+    (embedding_in, embedding_out, subword_net, embedding_net,
+     auxilary_task_net, loss_function, aux_loss_function) = get_model(
+         args, train_dataset, vocab, subword_vocab)
     context = utils.get_context(args)
 
     if subword_net is not None:
@@ -242,11 +264,15 @@ def train(args):
                     'momentum': args.dense_momentum
                 })
         elif args.dense_optimizer.lower() in ['adam', 'adagrad']:
-            dense_trainer = gluon.Trainer(subword_net.collect_params(),
-                                          args.dense_optimizer, {
-                                              'learning_rate': args.dense_lr,
-                                              'wd': args.dense_wd,
-                                          })
+            dense_params = (list(subword_net.collect_params().values()) +
+                            list(embedding_net.collect_params().values()))
+            if auxilary_task_net is not None:
+                dense_params = (dense_params + list(
+                    auxilary_task_net.collect_params().values()))
+            dense_trainer = gluon.Trainer(dense_params, args.dense_optimizer, {
+                'learning_rate': args.dense_lr,
+                'wd': args.dense_wd,
+            })
         else:
             logging.error('Unsupported optimizer')
             sys.exit(1)
@@ -275,7 +301,7 @@ def train(args):
 
         for i, batch_idx in zip(t, batches):
             batch = train_dataset[batch_idx]
-            (source, target, label, unique_sources_indices,
+            (source, target, label, unique_sources_indices_np,
              unique_sources_counts, unique_sources_subwordsequences,
              source_subword, unique_sources_subwordsequences_mask,
              unique_targets_indices, unique_targets_counts) = batch
@@ -297,7 +323,9 @@ def train(args):
             # Split and load subword info to all GPUs for accelerated computation
             assert unique_sources_subwordsequences.shape == \
                 unique_sources_subwordsequences_mask.shape
-            unique_token_subwordsequences = gluon.utils.split_and_load(
+            unique_sources_indices = gluon.utils.split_and_load(
+                unique_sources_indices_np, context, even_split=False)
+            unique_sources_subwordsequences = gluon.utils.split_and_load(
                 unique_sources_subwordsequences, context, even_split=False)
             unique_sources_subwordsequences_mask = gluon.utils.split_and_load(
                 unique_sources_subwordsequences_mask, context,
@@ -311,37 +339,51 @@ def train(args):
                 if subword_net is not None:
                     # Compute subword embeddings from subword info (byte sequences)
                     subword_embedding_weights = []
-                    attention_regularizers = []
-                    for subwordsequences_ctx, mask_ctx, last_valid_ctx in zip(
-                            unique_token_subwordsequences,
-                            unique_sources_subwordsequences_mask,
-                            unique_sources_subwordsequences_last_valid):
-                        out, att_weights = subword_net(
-                            subwordsequences_ctx, mask_ctx, last_valid_ctx)
-                        if att_weights is not None:
+                    attention_regularization = 0
+                    aux_loss = 0
+                    for (word_indices_ctx, subwordsequences_ctx,
+                         mask_ctx, last_valid_ctx) in zip(
+                             unique_sources_indices,
+                             unique_sources_subwordsequences,
+                             unique_sources_subwordsequences_mask,
+                             unique_sources_subwordsequences_last_valid):
+                        encoded, states = subword_net(subwordsequences_ctx,
+                                                      mask_ctx)
+
+                        # Compute embedding from encoded subword sequence
+                        if (args.embedding_network.lower() ==
+                                'selfattentionembedding'):
+                            out, att_weights = embedding_net(encoded, mask_ctx)
                             attention_regularizer = mx.nd.sqrt(
                                 mx.nd.sum((mx.nd.batch_dot(
-                                    att_weights, att_weights.swapaxes(1, 2)
-                                ) - mx.nd.eye(
-                                    args.
-                                    subwordrnn_self_attention_num_attention,
-                                    ctx=att_weights.context))**2))
-                            attention_regularizers.append(
+                                    att_weights, att_weights.swapaxes(
+                                        1, 2)) - mx.nd.eye(
+                                            args.self_attention_num_attention,
+                                            ctx=att_weights.context))**2))
+                            attention_regularization = (
+                                attention_regularization +
                                 attention_regularizer.as_in_context(
                                     context[0]))
+                        else:
+                            out = embedding_net(encoded, last_valid_ctx)
+
+                        # Auxilary task
+                        if auxilary_task_net is not None:
+                            aux_input = encoded[(last_valid_ctx,
+                                                 mx.nd.arange(
+                                                     encoded.shape[1],
+                                                     ctx=encoded.context))]
+                            aux_pred = auxilary_task_net(aux_input)
+                            aux_loss = aux_loss + mx.nd.sum(
+                                aux_loss_function(
+                                    aux_pred, word_indices_ctx).as_in_context(
+                                        context[0]))
 
                         # TODO check if the gradient is actually passed when switching device
                         subword_embedding_weights.append(
                             out.as_in_context(context[0]))
                     subword_embedding_weights = mx.nd.concat(
                         *subword_embedding_weights, dim=0)
-
-                    # TODO remove
-                    if attention_regularizers:
-                        attention_regularizers = mx.nd.sum(
-                            mx.nd.concat(*attention_regularizers, dim=0))
-                    else:
-                        attention_regularizers = None
 
                     # Look up subword embeddings of batch
                     subword_embeddings = mx.nd.Embedding(
@@ -380,13 +422,8 @@ def train(args):
                                          args.emsize))).reshape(emb_out_shape)
 
                 pred = mx.nd.batch_dot(emb_in, emb_out.swapaxes(1, 2))
-                if (subword_net is not None
-                        and attention_regularizers is not None):
-                    loss = loss_function(
-                        pred, label) + (args.attention_regularizer_lambda *
-                                        mx.nd.sum(attention_regularizers))
-                else:
-                    loss = loss_function(pred, label)
+                loss = (mx.nd.sum(loss_function(pred, label)) + aux_loss +
+                        attention_regularization)
 
             loss.backward()
 
@@ -403,7 +440,7 @@ def train(args):
                     lazy_update = True
                 emb_in_grad_normalization = mx.nd.sparse.row_sparse_array(
                     (unique_sources_counts.reshape(
-                        (-1, 1)), unique_sources_indices), ctx=context[0],
+                        (-1, 1)), unique_sources_indices_np), ctx=context[0],
                     dtype=np.float32)
                 utils.train_embedding(
                     args, embedding_in.weight.data(context[0]),
@@ -444,6 +481,8 @@ def train(args):
                                      global_step=current_update, bins=200)
                 if subword_net is not None:
                     for k, v in subword_net.collect_params().items():
+                        if v.grad_req == 'null':
+                            continue
                         sw.add_histogram(tag=k, values=v.data(ctx=context[0]),
                                          global_step=current_update, bins=200)
                         sw.add_histogram(tag='grad-' + str(k),
@@ -474,8 +513,9 @@ def train(args):
                 sw.add_scalar(tag='loss', value=loss.mean().asscalar(),
                               global_step=current_update)
 
-                eval_dict = evaluation.evaluate(
-                    args, embedding_in, subword_net, vocab, subword_vocab, sw)
+                eval_dict = evaluation.evaluate(args, embedding_in,
+                                                subword_net, embedding_net,
+                                                vocab, subword_vocab, sw)
                 for k, v in eval_dict.items():
                     sw.add_scalar(tag=k, value=float(v),
                                   global_step=current_update)

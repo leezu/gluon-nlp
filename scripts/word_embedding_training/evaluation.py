@@ -35,8 +35,8 @@ import utils
 
 
 def construct_vocab_embedding_for_dataset(args, tokens, vocab, embedding_in,
-                                          subword_vocab=None,
-                                          subword_net=None):
+                                          subword_vocab=None, subword_net=None,
+                                          embedding_net=None):
     '''Precompute the token embeddings for all the words in the vocabulary'''
     assert len(tokens) == len(set(tokens)), 'tokens contains duplicates.'
     assert embedding_in is not None or subword_net is not None
@@ -102,10 +102,15 @@ def construct_vocab_embedding_for_dataset(args, tokens, vocab, embedding_in,
 
         # 3. Compute
         if subword_net is not None:
-            token_subword_embeddings, _ = subword_net(
-                known_tokens_subword_indices_nd,
-                known_tokens_subword_indices_mask_nd,
-                known_tokens_subword_indices_last_valid_nd)
+            encoded, states = subword_net(known_tokens_subword_indices_nd,
+                                          known_tokens_subword_indices_mask_nd)
+
+            if args.embedding_network.lower() == 'selfattentionembedding':
+                token_subword_embeddings, _ = embedding_net(
+                    encoded, known_tokens_subword_indices_mask_nd)
+            else:
+                token_subword_embeddings, _ = embedding_net(
+                    encoded, known_tokens_subword_indices_last_valid_nd)
         else:  # Subword indices should be applicable for embedding_in
             subword_embeddings = embedding_in(known_tokens_subword_indices_nd)
             masked_subword_embeddings = mx.nd.broadcast_mul(
@@ -169,7 +174,7 @@ def _filter_similarity_dataset(token_to_idx, dataset):
 
 
 def evaluate_similarity(args, vocab, subword_vocab, embedding_in, subword_net,
-                        dataset_name, dataset_kwargs,
+                        embedding_net, dataset_name, dataset_kwargs,
                         similarity_function='CosineSimilarity',
                         mxboard_summary_writer=None):
     """Evaluation on similarity task."""
@@ -182,7 +187,8 @@ def evaluate_similarity(args, vocab, subword_vocab, embedding_in, subword_net,
 
     # Get token embedding matrix based on word and subword information
     token_to_idx, idx_to_vec = construct_vocab_embedding_for_dataset(
-        args, tokens, vocab, embedding_in, subword_vocab, subword_net)
+        args, tokens, vocab, embedding_in, subword_vocab, subword_net,
+        embedding_net)
     dataset = _filter_similarity_dataset(token_to_idx, dataset)
     dataset_coded = [[token_to_idx[d[0]], token_to_idx[d[1]], d[2]]
                      for d in dataset]
@@ -246,8 +252,8 @@ def evaluate_num_zero_rows(args, embedding_in, vocab, subword_vocab, eps=1E-5):
         }
 
 
-def evaluate(args, embedding_in, subword_net, vocab, subword_vocab,
-             mxboard_summary_writer=None):
+def evaluate(args, embedding_in, subword_net, embedding_net, vocab,
+             subword_vocab, mxboard_summary_writer=None):
     eval_dict = {}
     for dataset_name in args.similarity_datasets:
         if stats is None:
@@ -265,8 +271,8 @@ def evaluate(args, embedding_in, subword_net, vocab, subword_vocab,
                 logging.debug('Evaluating with  %s', similarity_function)
                 result, num_words = evaluate_similarity(
                     args, vocab, subword_vocab, embedding_in, subword_net,
-                    dataset_name, dataset_kwargs, similarity_function,
-                    mxboard_summary_writer)
+                    embedding_net, dataset_name, dataset_kwargs,
+                    similarity_function, mxboard_summary_writer)
                 dataset_name_wkwargs = dataset_name + ','.join(
                     "{!s}={!r}".format(k, v)
                     for (k, v) in dataset_kwargs.items())

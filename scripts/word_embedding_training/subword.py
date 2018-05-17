@@ -39,7 +39,19 @@ def add_subword_parameters_to_parser(parser):
     group.add_argument('--subword-embedding-dropout', type=float, default=0.0,
                        help='Embedding size for each subword piece.')
 
+    _selfattention_args(parser)
     _subwordrnn_args(parser)
+    _awdrnn_args(parser)
+    _wordprediction_args(parser)
+
+
+def _selfattention_args(parser):
+    group = parser.add_argument_group('Subword networks hyperparameters')
+    group.add_argument('--self-attention-num-units', type=int, default=350)
+    group.add_argument('--self-attention-num-attention', type=int, default=10)
+    group.add_argument('--self-attention-dropout', type=float, default=0.0)
+    group.add_argument('--self-attention-regularizer-lambda', type=float,
+                       default=1.0)
 
 
 def _subwordrnn_args(parser):
@@ -55,14 +67,25 @@ def _subwordrnn_args(parser):
                        help='If True, use self-attention on RNN states '
                        'to compute word embedding. '
                        'Otherwise use final states.')
-    group.add_argument('--subwordrnn-self-attention-num-units', type=int,
-                       default=350)
-    group.add_argument('--subwordrnn-self-attention-num-attention', type=int,
-                       default=10)
-    group.add_argument('--subwordrnn-self-attention-dropout', type=float,
-                       default=0.0)
-    group.add_argument('--attention-regularizer-lambda', type=float,
-                       default=1.0)
+
+
+def _awdrnn_args(parser):
+    group = parser.add_argument_group('Pretrained AWDRNN.')
+    group.add_argument('--awdrnn-path', type=str, default='model.params',
+                       help='Path to pretrained parameters.')
+    group.add_argument('--awdrnn-model', type=str, default='lstm',
+                       help='type of recurrent net '
+                       '(rnn_tanh, rnn_relu, lstm, gru)')
+    group.add_argument('--awdrnn-nhid', type=int, default=1150,
+                       help='number of hidden units per layer')
+    group.add_argument('--awdrnn-nlayers', type=int, default=3,
+                       help='number of layers')
+
+
+def _wordprediction_args(parser):
+    group = parser.add_argument_group('Auxilary word prediction task.')
+    group.add_argument('--wordprediction-hidden-size', type=int, default=300)
+    group.add_argument('--wordprediction-activation', type=str, default='tanh')
 
 
 ###############################################################################
@@ -93,26 +116,45 @@ def create(name, args, **kwargs):
     """Creates an instance of a registered network."""
     create_ = mx.registry.get_create_func(SubwordNetwork, 'subwordnetwork')
 
-    # General arguments
-    kwargs = dict(embed_size=args.subword_embedding_size,
-                  embedding_dropout=args.subword_embedding_dropout,
-                  output_size=args.emsize, **kwargs)
-
     # Network specific arguments
     if name.lower() == 'subwordrnn':
         kwargs = dict(
-            mode=args.subwordrnn_mode, hidden_size=args.subwordrnn_hidden_size,
+            embed_size=args.subword_embedding_size,
+            embedding_dropout=args.subword_embedding_dropout,
+            output_size=args.emsize,
+            mode=args.subwordrnn_mode,
+            hidden_size=args.subwordrnn_hidden_size,
             num_layers=args.subwordrnn_num_layers,
             bidirectional=not args.subwordrnn_no_bidirectional,
             encoder_dropout=args.subwordrnn_encoder_dropout,
-            use_self_attention=args.subwordrnn_self_attention,
-            self_attention_num_units=args.subwordrnn_self_attention_num_units,
-            self_attention_num_attention=args.
-            subwordrnn_self_attention_num_attention,
-            self_attention_dropout=args.subwordrnn_self_attention_dropout,
-            **kwargs)
+            **kwargs,
+        )
+    elif name.lower() == 'awdrnn':
+        kwargs = dict(
+            embed_size=args.subword_embedding_size,
+            output_size=args.emsize,
+            model=args.awdrnn_model,
+            hidden_size=args.awdrnn_nhid,
+            num_layers=args.awdrnn_nlayers,
+            awdrnn_path=args.awdrnn_path,
+            **kwargs,
+        )
+    elif name.lower() == 'selfattentionembedding':
+        kwargs = dict(
+            output_size=args.emsize,
+            num_units=args.self_attention_num_units,
+            num_attention=args.self_attention_num_attention,
+            dropout=args.self_attention_dropout,
+            **kwargs,
+        )
+    elif name.lower() == 'wordprediction':
+        kwargs = dict(
+            hidden_size=args.wordprediction_hidden_size,
+            activation=args.wordprediction_activation,
+            **kwargs,
+        )
     else:
-        raise NotImplementedError
+        raise NotImplementedError(name)
 
     return create_(name, **kwargs)
 
@@ -127,7 +169,7 @@ def list_subwordnetworks(name=None):
 
 
 ###############################################################################
-# Model definitions
+# Subword encoders
 ###############################################################################
 class SubwordNetwork(gluon.Block):
     """Models for sub-word embedding inference.
@@ -141,34 +183,10 @@ class SubwordNetwork(gluon.Block):
 
 @register
 class SubwordRNN(SubwordNetwork):
-    """RNN model for sub-word embedding inference.
-
-    Parameters
-    ----------
-    mode : str
-        The type of RNN to use. Options are 'lstm', 'gru', 'rnn_tanh',
-        'rnn_relu'.
-    embed_size : int
-        Dimension of embedding vectors for subword units.
-    hidden_size : int
-        Number of hidden units for RNN.
-    output_size : int
-        Dimension of embedding vectors for subword units.
-    vocab_size : int, default 2**8
-        Size of the input vocabulary. Usually the input vocabulary is the
-        number of distinct bytes.
-    dropout : float  # TODO
-        Dropout rate to use for encoder output.
-    use_self_attention : bool
-        Use self attention to combine time-steps to a word embedding. Otherwise
-        use final state.
-
-    """
+    """RNN model for sub-word embedding inference."""
 
     def __init__(self, mode, embed_size, hidden_size, output_size, num_layers,
                  embedding_dropout, bidirectional, encoder_dropout, vocab_size,
-                 use_self_attention, self_attention_num_units,
-                 self_attention_num_attention, self_attention_dropout,
                  embedding_initializer=mx.init.Uniform(), **kwargs):
         super(SubwordRNN, self).__init__(**kwargs)
         # Embedding
@@ -184,22 +202,12 @@ class SubwordRNN(SubwordNetwork):
         self.num_layers = num_layers
         self.encoder_dropout = encoder_dropout
 
-        self.use_self_attention = use_self_attention
-        self.self_attention_num_units = self_attention_num_units
-        self.self_attention_num_attention = self_attention_num_attention
-        self.self_attention_dropout = self_attention_dropout
-
         # Output
         self.output_size = output_size
 
         with self.name_scope():
             self.embedding = self._get_embedding()
             self.encoder = self._get_encoder()
-            self.rnn_to_rep = gluon.nn.Dense(self.output_size, flatten=False,
-                                             activation='tanh')
-            if self.use_self_attention:
-                self.attention = self._get_self_attention()
-            self.decoder = self._get_decoder()
 
     def _get_embedding(self):
         embedding = gluon.nn.HybridSequential()
@@ -231,19 +239,10 @@ class SubwordRNN(SubwordNetwork):
             input_size=self.embed_size)
         return rnn
 
-    def _get_decoder(self):
-        return gluon.nn.Dense(self.output_size, flatten=True)
-
-    def _get_self_attention(self):
-        return self_attention.StructuredSelfAttentionCell(
-            units=self.self_attention_num_units,
-            num_attention=self.self_attention_num_attention,
-            dropout=self.self_attention_dropout)
-
     def begin_state(self, *args, **kwargs):
         return self.encoder.begin_state(*args, **kwargs)
 
-    def forward(self, inputs, mask, last_valid, begin_state=None):
+    def forward(self, inputs, mask, begin_state=None):
         """Defines the forward computation. Arguments can be either
         :py:class:`NDArray` or :py:class:`Symbol`."""
         F = mx.nd
@@ -259,25 +258,72 @@ class SubwordRNN(SubwordNetwork):
                                            ctx=inputs.context)
 
         encoded, states = self.encoder(masked_embeddings, begin_state)
+        return encoded, states
 
-        if self.use_self_attention:
-            # Switch outputs to NTC
-            rep = self.rnn_to_rep(encoded)
-            rep = rep.swapaxes(0, 1)
-            attention_mask = mask.expand_dims(-2).broadcast_to(
-                (mask.shape[0], self.self_attention_num_attention,
-                 mask.shape[1]))
-            context_vec, att_weights = self.attention(rep, attention_mask)
-            # Combine multiple attentions
-            out = self.decoder(context_vec)
-            return out, att_weights
-        else:
-            assert len(states) == 1
-            enc = encoded[last_valid,
-                          mx.nd.arange(inputs.shape[0], ctx=inputs.context)]
-            rep = self.rnn_to_rep(enc)
-            out = self.decoder(rep)
-            return out, None
+
+@register
+class AWDRNN(SubwordNetwork):
+    """Pretrained character language model with learned self attention.
+
+    """
+
+    def __init__(self, model, embed_size, hidden_size, num_layers, output_size,
+                 vocab_size, awdrnn_path, **kwargs):
+        super(AWDRNN, self).__init__(**kwargs)
+        # AWDRNN
+        self.model = model
+        self.embed_size = embed_size
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.vocab_size = vocab_size
+        self.awdrnn_path = awdrnn_path
+        # Output
+        self.output_size = output_size
+
+        # Initialized outside of namescope, as no training needed
+        self.awdrnn = self._get_awdrnn()
+
+    def _get_awdrnn(self):
+        return nlp.model.language_model.AWDRNN(
+            self.model, self.vocab_size, self.embed_size, self.hidden_size,
+            self.num_layers, True, 0, 0, 0, 0, 0)
+
+    def initialize(self, *args, **kwargs):
+        # Disable gradients for pretrained AWDRNN
+        for name, param in self.awdrnn.collect_params().items():
+            param.grad_req = 'null'
+
+        # Normal initialization
+        super(AWDRNN, self).initialize(*args, **kwargs)
+
+        # Overwrite with pretrained parameters
+        self.awdrnn.load_params(self.awdrnn_path)
+
+    def begin_state(self, *args, **kwargs):
+        return self.encoder.begin_state(*args, **kwargs)
+
+    def forward(self, inputs, mask, begin_state=None):
+        """Defines the forward computation. Arguments can be either
+        :py:class:`NDArray` or :py:class:`Symbol`."""
+        F = mx.nd
+
+        with mx.autograd.pause():
+            # Change NTC to TNC layout (for RNN)
+            inputs = inputs.swapaxes(0, 1)
+            mask_tn = F.transpose(mask)
+
+            encoded = self.awdrnn.embedding(inputs)
+            # Switch mask from NT to TN
+            encoded = F.broadcast_mul(encoded, F.expand_dims(mask_tn, axis=-1))
+
+            if not begin_state:
+                begin_state = self.awdrnn.begin_state(
+                    batch_size=inputs.shape[1], ctx=inputs.context)
+            out_states = []
+            for i, (e, s) in enumerate(zip(self.awdrnn.encoder, begin_state)):
+                encoded, state = e(encoded, s)
+                out_states.append(state)
+        return encoded, out_states
 
 
 @register
@@ -374,4 +420,102 @@ class SubwordCNN(SubwordNetwork, gluon.HybridBlock):
 
         encoded = self.encoder(embeddings_masked)
         out = self.decoder(encoded)
+        return out
+
+
+###############################################################################
+# Embedding and auxiliary models
+###############################################################################
+@register
+class SelfAttentionEmbedding(SubwordNetwork, gluon.HybridBlock):
+    """Predicts an embedding from a sequence."""
+
+    def __init__(self, output_size, num_units, num_attention, dropout,
+                 **kwargs):
+        super(SelfAttentionEmbedding, self).__init__(**kwargs)
+
+        self.num_units = num_units
+        self.num_attention = num_attention
+        self.dropout = dropout
+        self.output_size = output_size
+
+        with self.name_scope():
+            self.rnn_to_rep = gluon.nn.Dense(self.output_size, flatten=False,
+                                             activation='tanh')
+            self.attention = self._get_self_attention()
+            self.decoder = self._get_decoder()
+
+    def _get_decoder(self):
+        return gluon.nn.Dense(self.output_size, flatten=True)
+
+    def _get_self_attention(self):
+        return self_attention.StructuredSelfAttentionCell(
+            units=self.num_units, num_attention=self.num_attention,
+            dropout=self.dropout)
+
+    def hybrid_forward(self, F, inputs, mask):
+        """Defines the forward computation. Arguments can be either
+        :py:class:`NDArray` or :py:class:`Symbol`."""
+        # Switch outputs to NTC
+        rep = self.rnn_to_rep(inputs)
+        rep = F.swapaxes(rep, 0, 1)
+        mask = F.expand_dims(mask, -2)
+        mask = F.broadcast_axes(mask, 1, self.num_attention)
+        context_vec, att_weights = self.attention(rep, mask)
+        # Combine multiple attentions
+        out = self.decoder(context_vec)
+        return out, att_weights
+
+
+@register
+class LastOutputEmbedding(SubwordNetwork):
+    """Predicts an embedding from a sequence."""
+
+    def __init__(self, output_size, num_units, num_attention, dropout,
+                 **kwargs):
+        super(LastOutputEmbedding, self).__init__(**kwargs)
+
+        self.output_size = output_size
+
+        with self.name_scope():
+            self.rnn_to_rep = gluon.nn.Dense(self.output_size, flatten=False,
+                                             activation='tanh')
+            self.decoder = self._get_decoder()
+
+    def _get_decoder(self):
+        return gluon.nn.Dense(self.output_size, flatten=True)
+
+    def forward(self, inputs, last_valid):
+        """Defines the forward computation. Arguments can be either
+        :py:class:`NDArray` or :py:class:`Symbol`."""
+        F = mx.nd
+
+        enc = inputs[last_valid, F.arange(inputs.shape[0], ctx=inputs.context)]
+        rep = self.rnn_to_rep(enc)
+        out = self.decoder(rep)
+        return out, None
+
+
+@register
+class WordPrediction(SubwordNetwork, gluon.HybridBlock):
+    """Predicts the word index from a sequence."""
+
+    def __init__(self, hidden_size, vocab_size, activation, **kwargs):
+        super(WordPrediction, self).__init__(**kwargs)
+
+        self.hidden_size = hidden_size
+        self.vocab_size = vocab_size
+        self.activation = activation
+
+        with self.name_scope():
+            self.hidden = gluon.nn.Dense(self.hidden_size, flatten=False,
+                                         activation=self.activation)
+            self.out = gluon.nn.Dense(self.vocab_size, flatten=False,
+                                      in_units=self.hidden_size)
+
+    def hybrid_forward(self, F, states):
+        """Defines the forward computation. Arguments can be either
+        :py:class:`NDArray` or :py:class:`Symbol`."""
+        hidden = self.hidden(states)
+        out = self.out(hidden)
         return out
