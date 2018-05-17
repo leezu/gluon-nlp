@@ -193,7 +193,7 @@ class Vocab(object):
             self._idx_to_token.extend(special_tokens)
             self._idx_to_counts.extend([-1] * len(special_tokens))
 
-        if unknown_token:
+        if unknown_token is not None:
             self._token_to_idx = DefaultLookupDict(C.UNK_IDX)
         else:
             self._token_to_idx = {}
@@ -212,7 +212,7 @@ class Vocab(object):
         unknown_and_special_tokens = set(
             special_tokens) if special_tokens else set()
 
-        if unknown_token:
+        if unknown_token is not None:
             unknown_and_special_tokens.add(unknown_token)
 
         token_freqs = sorted(counter.items(), key=lambda x: x[0])
@@ -476,7 +476,7 @@ class Vocab(object):
         vocab._idx_to_token = vocab_dict.get('idx_to_token')
         vocab._idx_to_counts = vocab_dict.get('idx_to_counts')
         vocab._token_to_idx = vocab_dict.get('token_to_idx')
-        if unknown_token:
+        if unknown_token is not None:
             vocab._token_to_idx = DefaultLookupDict(
                 vocab._token_to_idx[unknown_token], vocab._token_to_idx)
         vocab._reserved_tokens = vocab_dict.get('reserved_tokens')
