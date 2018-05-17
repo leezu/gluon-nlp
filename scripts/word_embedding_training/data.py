@@ -92,6 +92,10 @@ def _get_sentence_corpus(args):
             sentences = [sentences[0][:1000]]
         elif args.train_dataset.lower() == 'text8':
             sentences = nlp.data.Text8(segment='train')
+        elif args.train_dataset.lower() == 'wikitext2':
+            sentences = nlp.data.WikiText2(segment='train')
+        elif args.train_dataset.lower() == 'wikitext103':
+            sentences = nlp.data.WikiText103(segment='train')
         elif args.train_dataset.lower() == 'wikipedia':
             raise RuntimeError(
                 'Use map reduce function for wikipedia dataset.')
