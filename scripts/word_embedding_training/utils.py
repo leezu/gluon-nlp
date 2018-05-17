@@ -80,18 +80,15 @@ def train_embedding(args, param_data, param_grad, grad_normalization=None,
             param_grad = mx.nd.sparse.row_sparse_array(param_data.shape,
                                                        ctx=param_data.context)
 
-        mx.nd.sparse.sgd_update(
+        mx.nd.sparse.proximal_sgd_update(
             weight=param_data, grad=param_grad,
             last_update_buffer=last_update_buffer, lr=args.embeddings_lr,
             sparsity=args.sparsity_lambda, current_update=current_update,
             out=param_data, lazy_update=lazy_update)
     else:
-        # TODO make last_update_buffer and current_update optional on mxnet side.
-        mx.nd.sparse.sgd_update(
-            weight=param_data, grad=param_grad, last_update_buffer=mx.nd.zeros(
-                param_data.shape,
-                ctx=param_data.context), lr=args.embeddings_lr, sparsity=0,
-            current_update=0, out=param_data, lazy_update=lazy_update)
+        mx.nd.sparse.sgd_update(weight=param_data, grad=param_grad,
+                                lr=args.embeddings_lr, out=param_data,
+                                lazy_update=lazy_update)
 
 
 def _get_tempfilename(directory):
