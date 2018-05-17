@@ -380,6 +380,12 @@ def train(args):
                                 aux_loss_function(
                                     aux_pred, word_indices_ctx).as_in_context(
                                         context[0]))
+                            aux_acc = aux_pred.argmax(1) == word_indices_ctx
+                            aux_acc = mx.nd.sum(aux_acc) / aux_acc.shape[0]
+                        else:
+                            # TODO aux_acc only computed on one device
+                            aux_acc = 0
+
 
                         # TODO check if the gradient is actually passed when switching device
                         subword_embedding_weights.append(
@@ -424,8 +430,8 @@ def train(args):
                                          args.emsize))).reshape(emb_out_shape)
 
                 pred = mx.nd.batch_dot(emb_in, emb_out.swapaxes(1, 2))
-                loss = (mx.nd.sum(loss_function(pred, label)) + aux_loss +
-                        attention_regularization)
+                task_loss = mx.nd.sum(loss_function(pred, label))
+                loss = task_loss + aux_loss + attention_regularization
 
             loss.backward()
 
@@ -490,12 +496,31 @@ def train(args):
                         sw.add_histogram(tag='grad-' + str(k),
                                          values=v.grad(ctx=context[0]),
                                          global_step=current_update, bins=200)
+                    # Predicted word embeddings
+                    sw.add_histogram(
+                        tag='subword_embedding_in_norm',
+                        values=subword_embedding_weights.norm(axis=1),
+                        global_step=current_update, bins=200)
 
-                        # Predicted word embeddings
-                        sw.add_histogram(
-                            tag='subword_embedding_in_norm',
-                            values=subword_embedding_weights.norm(axis=1),
-                            global_step=current_update, bins=200)
+                if embedding_net is not None:
+                    for k, v in embedding_net.collect_params().items():
+                        if v.grad_req == 'null':
+                            continue
+                        sw.add_histogram(tag=k, values=v.data(ctx=context[0]),
+                                         global_step=current_update, bins=200)
+                        sw.add_histogram(tag='grad-' + str(k),
+                                         values=v.grad(ctx=context[0]),
+                                         global_step=current_update, bins=200)
+
+                if auxilary_task_net is not None:
+                    for k, v in auxilary_task_net.collect_params().items():
+                        if v.grad_req == 'null':
+                            continue
+                        sw.add_histogram(tag=k, values=v.data(ctx=context[0]),
+                                         global_step=current_update, bins=200)
+                        sw.add_histogram(tag='grad-' + str(k),
+                                         values=v.grad(ctx=context[0]),
+                                         global_step=current_update, bins=200)
 
                 # Embedding out
                 embedding_out_norm = embedding_out.weight.data(
@@ -514,6 +539,22 @@ def train(args):
                 # Scalars
                 sw.add_scalar(tag='loss', value=loss.mean().asscalar(),
                               global_step=current_update)
+                sw.add_scalar(tag='task_loss',
+                              value=task_loss.mean().asscalar(),
+                              global_step=current_update)
+                if not isinstance(aux_loss, int):
+                    sw.add_scalar(tag='aux_loss',
+                                  value=aux_loss.asscalar(),
+                                  global_step=current_update)
+                if not isinstance(aux_acc, int):
+                    sw.add_scalar(tag='aux_acc',
+                                  value=aux_acc.asscalar(),
+                                  global_step=current_update)
+                if not isinstance(attention_regularization, int):
+                    sw.add_scalar(
+                        tag='attention_regularization',
+                        value=attention_regularization.asscalar(),
+                        global_step=current_update)
 
                 eval_dict = evaluation.evaluate(args, embedding_in,
                                                 subword_net, embedding_net,
