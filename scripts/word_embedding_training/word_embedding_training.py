@@ -300,6 +300,8 @@ def train(args):
             t = range(len(batches))
 
         for i, batch_idx in zip(t, batches):
+            mx.nd.waitall()  # wait to avoid cudnn memory related crashes
+
             batch = train_dataset[batch_idx]
             (source, target, label, unique_sources_indices_np,
              unique_sources_counts, unique_sources_subwordsequences,
