@@ -60,6 +60,10 @@ setup(
             'spacy',
             'nltk',
             'scipy',
+            'mxboard',
+            'tqdm',
+            'pandas',
+            'numba',
         ],
         'dev': [
             'pytest',
