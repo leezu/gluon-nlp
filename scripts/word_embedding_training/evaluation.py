@@ -37,7 +37,11 @@ import utils
 def construct_vocab_embedding_for_dataset(args, tokens, vocab, embedding_in,
                                           subword_vocab=None, subword_net=None,
                                           embedding_net=None):
-    '''Precompute the token embeddings for all the words in the vocabulary'''
+    '''Precompute the token embeddings for all the words in the vocabulary.
+
+    Returns token_to_idx, embedding. Embedding may be None, if all words are
+    OOV and no subword_net is supplied.
+    '''
     assert len(tokens) == len(set(tokens)), 'tokens contains duplicates.'
     assert embedding_in is not None or subword_net is not None
 
@@ -148,20 +152,28 @@ def construct_vocab_embedding_for_dataset(args, tokens, vocab, embedding_in,
     # Compute result token_to_idx map
     token_to_idx = {token: i for i, token in enumerate(known_tokens)}
 
+    if not known_tokens:
+        return token_to_idx, None
+
     # Look up token embeddings from embedding_in
     if embedding_in is not None:
         known_token_idx = [
             vocab.to_indices(t) if t in vocab else 0 for t in known_tokens
         ]
-        known_token_idx_nd = mx.nd.array(known_token_idx, ctx=context[0])
-        known_token_idx_mask_nd = mx.nd.array(token_mask, ctx=context[0]) \
-                                       .expand_dims(-1)
-        unmasked_token_embeddings = embedding_in(known_token_idx_nd)
-        token_embeddings = mx.nd.broadcast_mul(unmasked_token_embeddings,
-                                               known_token_idx_mask_nd)
+        if known_token_idx:
+            known_token_idx_nd = mx.nd.array(known_token_idx, ctx=context[0])
+            known_token_idx_mask_nd = mx.nd.array(token_mask, ctx=context[0]) \
+                                           .expand_dims(-1)
+            unmasked_token_embeddings = embedding_in(known_token_idx_nd)
+            token_embeddings = mx.nd.broadcast_mul(unmasked_token_embeddings,
+                                                   known_token_idx_mask_nd)
+        else:
+            token_embeddings = None
+    else:
+        token_embeddings = None
 
     # Combine subword and word level embeddings
-    if subword_vocab is not None and embedding_in is not None:
+    if subword_vocab is not None and token_embeddings is not None:
         assert token_embeddings.shape == \
             token_subword_embeddings.shape
         embeddings = token_embeddings + token_subword_embeddings
@@ -178,12 +190,8 @@ def _filter_similarity_dataset(token_to_idx, dataset):
     dataset = [
         d for d in dataset if d[0] in token_to_idx and d[1] in token_to_idx
     ]
-
     num_dropped = initial_length - len(dataset)
-    if num_dropped:
-        logging.debug('Dropped %s pairs from %s as the were OOV.', num_dropped,
-                      dataset.__class__.__name__)
-    return dataset
+    return dataset, num_dropped / initial_length
 
 
 def evaluate_similarity(args, vocab, subword_vocab, embedding_in, subword_net,
@@ -202,7 +210,12 @@ def evaluate_similarity(args, vocab, subword_vocab, embedding_in, subword_net,
     token_to_idx, idx_to_vec = construct_vocab_embedding_for_dataset(
         args, tokens, vocab, embedding_in, subword_vocab, subword_net,
         embedding_net)
-    dataset = _filter_similarity_dataset(token_to_idx, dataset)
+    dataset, share_dropped = _filter_similarity_dataset(token_to_idx, dataset)
+
+    if not dataset:
+        # Only OOV
+        return -1, share_dropped
+
     dataset_coded = [[token_to_idx[d[0]], token_to_idx[d[1]], d[2]]
                      for d in dataset]
 
@@ -213,11 +226,6 @@ def evaluate_similarity(args, vocab, subword_vocab, embedding_in, subword_net,
         mxboard_summary_writer.add_embedding(
             tag='similarity-{}'.format(dataset_name_wkwargs),
             embedding=idx_to_vec.as_in_context(mx.cpu()), labels=idx_to_token)
-
-    if not dataset_coded:
-        logging.info('Dataset {} contains only OOV. Skipping.'.format(
-            dataset_name_wkwargs))
-        return 0, 0
 
     # Evaluate
     words1, words2, scores = zip(*dataset_coded)
@@ -233,9 +241,7 @@ def evaluate_similarity(args, vocab, subword_vocab, embedding_in, subword_net,
             words2, ctx=context[0]))
 
     sr = stats.spearmanr(pred_similarity.asnumpy(), np.array(scores))
-    logging.debug('Spearman rank correlation on %s: %s',
-                  dataset.__class__.__name__, sr.correlation)
-    return sr.correlation, len(dataset)
+    return sr.correlation, share_dropped
 
 
 def evaluate_num_zero_rows(args, embedding_in, subword_net, vocab,
@@ -279,15 +285,11 @@ def evaluate(args, embedding_in, subword_net, embedding_net, vocab,
                 'Similarity evaluation requires scipy.'
                 'You may install scipy via `pip install scipy`.')
 
-        logging.debug('Starting evaluation of %s', dataset_name)
         parameters = nlp.data.list_datasets(dataset_name)
         for key_values in itertools.product(*parameters.values()):
             dataset_kwargs = dict(zip(parameters.keys(), key_values))
-            logging.debug('Evaluating with %s', dataset_kwargs)
-
             for similarity_function in args.similarity_functions:
-                logging.debug('Evaluating with  %s', similarity_function)
-                result, num_words = evaluate_similarity(
+                result, share_dropped = evaluate_similarity(
                     args, vocab, subword_vocab, embedding_in, subword_net,
                     embedding_net, dataset_name, dataset_kwargs,
                     similarity_function, mxboard_summary_writer)
@@ -295,8 +297,8 @@ def evaluate(args, embedding_in, subword_net, embedding_net, vocab,
                     "{!s}={!r}".format(k, v)
                     for (k, v) in dataset_kwargs.items())
                 eval_dict['similarity-sr-' + dataset_name_wkwargs] = result
-                eval_dict['similarity-numwords--'
-                          + dataset_name_wkwargs] = num_words
+                eval_dict['similarity-sharedropped--'
+                          + dataset_name_wkwargs] = share_dropped
 
     if embedding_in is not None:
         eval_dict = {
