@@ -106,16 +106,20 @@ def construct_vocab_embedding_for_dataset(args, tokens, vocab, embedding_in,
 
             # 3. Compute
             if subword_net is not None:
-                encoded, states = subword_net(
-                    known_tokens_subword_indices_nd,
-                    known_tokens_subword_indices_mask_nd)
+                encoded = subword_net(known_tokens_subword_indices_nd,
+                                      known_tokens_subword_indices_mask_nd)
 
-                if args.embedding_network.lower() == 'selfattentionembedding':
-                    token_subword_embeddings, _ = embedding_net(
-                        encoded, known_tokens_subword_indices_mask_nd)
+                if embedding_net is not None:
+                    if (args.embedding_network.lower() ==
+                            'selfattentionembedding'):
+                        token_subword_embeddings, _ = embedding_net(
+                            encoded, known_tokens_subword_indices_mask_nd)
+                    else:
+                        token_subword_embeddings = embedding_net(
+                            encoded,
+                            known_tokens_subword_indices_last_valid_nd)
                 else:
-                    token_subword_embeddings = embedding_net(
-                        encoded, known_tokens_subword_indices_last_valid_nd)
+                    token_subword_embeddings = encoded
             else:  # Subword indices should be applicable for embedding_in
                 subword_embeddings = embedding_in(
                     known_tokens_subword_indices_nd)
@@ -234,31 +238,36 @@ def evaluate_similarity(args, vocab, subword_vocab, embedding_in, subword_net,
     return sr.correlation, len(dataset)
 
 
-def evaluate_num_zero_rows(args, embedding_in, vocab, subword_vocab, eps=1E-5):
+def evaluate_num_zero_rows(args, embedding_in, subword_net, vocab,
+                           subword_vocab, eps=1E-5):
     context = utils.get_context(args)
+
     token_idx_to_vec = embedding_in.weight.data(ctx=context[0]).as_in_context(
         mx.cpu()).data
     embedding_norm = mx.nd.norm(token_idx_to_vec, axis=1)
-    if args.subword_network.lower() != 'fasttext':
-        assert len(vocab) == embedding_norm.shape[0]
-        num_zero_word_vectors = mx.nd.sum(embedding_norm < eps).asscalar()
-        return {
-            'zero_word_vectors': num_zero_word_vectors,
-            'nonzero_word_vectors': len(vocab) - num_zero_word_vectors
-        }
-    else:
-        assert len(vocab) + len(subword_vocab) == embedding_norm.shape[0]
-        num_zero_word_vectors = mx.nd.sum(
-            embedding_norm[:len(vocab)] < eps).asscalar()
+    num_zero_word_vectors = mx.nd.sum(embedding_norm < eps).asscalar()
+    assert len(vocab) == embedding_norm.shape[0]
+    eval_dict = {
+        'zero_word_vectors': num_zero_word_vectors,
+        'nonzero_word_vectors': len(vocab) - num_zero_word_vectors
+    }
+
+    if args.subword_network.lower() in ['sumreduce', 'fasttext']:
+        subword_idx_to_vec = subword_net.embedding.weight.data(
+            ctx=context[0]).as_in_context(mx.cpu()).data
+        subword_embedding_norm = mx.nd.norm(subword_idx_to_vec, axis=1)
         num_zero_subword_vectors = mx.nd.sum(
-            embedding_norm[len(vocab):] < eps).asscalar()
-        return {
-            'zero_word_vectors': num_zero_word_vectors,
-            'nonzero_word_vectors': len(vocab) - num_zero_word_vectors,
+            subword_embedding_norm < eps).asscalar()
+        assert len(subword_vocab) == subword_embedding_norm.shape[0]
+
+        eval_dict = {
             'zero_subword_vectors': num_zero_subword_vectors,
             'nonzero_subword_vectors':
-            len(subword_vocab) - num_zero_word_vectors
+            len(subword_vocab) - num_zero_word_vectors,
+            **eval_dict,
         }
+
+    return eval_dict
 
 
 def evaluate(args, embedding_in, subword_net, embedding_net, vocab,
@@ -291,7 +300,7 @@ def evaluate(args, embedding_in, subword_net, embedding_net, vocab,
 
     if embedding_in is not None:
         eval_dict = {
-            **evaluate_num_zero_rows(args, embedding_in, vocab, subword_vocab),
+            **evaluate_num_zero_rows(args, embedding_in, subword_net, vocab, subword_vocab),
             **eval_dict
         }
     return eval_dict

@@ -21,6 +21,7 @@
 
 """
 import functools
+import warnings
 
 import mxnet as mx
 from mxnet import gluon
@@ -140,6 +141,11 @@ def create(name, args, **kwargs):
             awdrnn_path=args.awdrnn_path,
             **kwargs,
         )
+    elif name.lower() in ['sumreduce', 'fasttext']:
+        if args.subword_embedding_size != args.emsize:
+            warnings.warn('In {} mode, subword-embedding-size '
+                          'must equal emsize. Using emsize {} instead.')
+        kwargs = dict(embed_size=args.emsize, **kwargs)
     elif name.lower() == 'selfattentionembedding':
         kwargs = dict(
             output_size=args.emsize,
@@ -175,6 +181,11 @@ def list_subwordnetworks(name=None):
         return reg[name.lower()]
 
 
+def alias(name):
+    alias_ = mx.registry.get_alias_func(SubwordNetwork, 'metric')
+    return alias_(name)
+
+
 ###############################################################################
 # Subword encoders
 ###############################################################################
@@ -186,6 +197,37 @@ class SubwordNetwork(gluon.Block):
     """
 
     min_size = 0
+
+
+@register
+@alias('fasttext')
+class SumReduce(SubwordNetwork, gluon.HybridBlock):
+    """Compute word embedding via summing over all subword embeddings."""
+
+    def __init__(self, vocab_size, embed_size,
+                 embedding_initializer=mx.init.Uniform(), **kwargs):
+        super(SumReduce, self).__init__(**kwargs)
+        self.vocab_size = vocab_size
+        self.embed_size = embed_size
+        self.embedding_initializer = embedding_initializer
+
+        with self.name_scope():
+            self.embedding = self._get_embedding()
+
+    def _get_embedding(self):
+        embedding = gluon.nn.SparseEmbedding(
+            self.vocab_size, self.embed_size,
+            weight_initializer=self.embedding_initializer)
+        return embedding
+
+    def hybrid_forward(self, F, inputs, mask, begin_state=None):
+        """Defines the forward computation. Arguments can be either
+        :py:class:`NDArray` or :py:class:`Symbol`."""
+        subword_embeddings = self.embedding(inputs)
+        mask = F.expand_dims(mask, axis=-1)
+        subword_masked_embeddings = F.broadcast_mul(subword_embeddings, mask)
+        out = F.sum(subword_masked_embeddings, axis=-2)
+        return out
 
 
 @register
@@ -265,7 +307,7 @@ class SubwordRNN(SubwordNetwork):
                                            ctx=inputs.context)
 
         encoded, states = self.encoder(masked_embeddings, begin_state)
-        return encoded, states
+        return encoded
 
 
 @register
@@ -330,7 +372,7 @@ class AWDRNN(SubwordNetwork):
             for i, (e, s) in enumerate(zip(self.awdrnn.encoder, begin_state)):
                 encoded, state = e(encoded, s)
                 out_states.append(state)
-        return encoded, out_states
+        return encoded
 
 
 @register
@@ -519,9 +561,9 @@ class WordPrediction(SubwordNetwork, gluon.HybridBlock):
             self.out = gluon.nn.Dense(self.vocab_size, flatten=False,
                                       in_units=self.hidden_size)
 
-    def hybrid_forward(self, F, states):
+    def hybrid_forward(self, F, inputs):
         """Defines the forward computation. Arguments can be either
         :py:class:`NDArray` or :py:class:`Symbol`."""
-        hidden = self.hidden(states)
+        hidden = self.hidden(inputs)
         out = self.out(hidden)
         return out

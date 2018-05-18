@@ -40,19 +40,6 @@ import trainer
 
 
 ###############################################################################
-# Hyperparameters
-###############################################################################
-def add_parameters(parser):
-    group = parser.add_argument_group('Subword network model arguments')
-    group.add_argument(
-        '--embedding-network', default='LastOutputEmbedding',
-        help='Network architecture to create embedding from encoded subwords.')
-    group.add_argument('--subword-function', type=str, default='byte')
-    group.add_argument('--auxilary-task', action='store_true',
-                       help='Use auxilary word prediction task.')
-
-
-###############################################################################
 # Training code
 ###############################################################################
 def compute_subword_embeddings(args, *posargs, **kwargs):
@@ -102,15 +89,19 @@ def _compute_subword_embeddings_single_gpu(
     mask_ctx = unique_sources_subwordsequences_mask[0]
     last_valid_ctx = unique_sources_subwordsequences_last_valid[0]
 
-    encoded, states = subword_net(subwordsequences_ctx, mask_ctx)
+    encoded = subword_net(subwordsequences_ctx, mask_ctx)
 
     # Compute embedding from encoded subword sequence
-    if (args.embedding_network.lower() == 'selfattentionembedding'):
-        subword_embedding_weights, attention_regularization = \
-            compute_embedding_net_self_attention(
-                args, embedding_net, encoded, mask_ctx)
+    if embedding_net is not None:
+        if (args.embedding_network.lower() == 'selfattentionembedding'):
+            subword_embedding_weights, attention_regularization = \
+                compute_embedding_net_self_attention(
+                    args, embedding_net, encoded, mask_ctx)
+        else:
+            subword_embedding_weights = embedding_net(encoded, last_valid_ctx)
+            attention_regularization = 0
     else:
-        subword_embedding_weights = embedding_net(encoded, last_valid_ctx)
+        subword_embedding_weights = encoded
         attention_regularization = 0
 
     # Auxilary task
@@ -146,7 +137,7 @@ def _compute_subword_embeddings(
              unique_sources_indices, unique_sources_subwordsequences,
              unique_sources_subwordsequences_mask,
              unique_sources_subwordsequences_last_valid):
-        encoded, states = subword_net(subwordsequences_ctx, mask_ctx)
+        encoded = subword_net(subwordsequences_ctx, mask_ctx)
 
         # Compute embedding from encoded subword sequence
         if (args.embedding_network.lower() == 'selfattentionembedding'):
@@ -208,11 +199,11 @@ def train(args):
         embedding_in_trainer = trainer.get_embedding_in_trainer(
             args, embedding_in.collect_params())
     if subword_net is not None:
-        subword_params = (list(subword_net.collect_params().values()) +
-                          list(embedding_net.collect_params().values()))
+        subword_params = list(subword_net.collect_params().values())
+        if embedding_net is not None:
+            subword_params += list(embedding_net.collect_params().values())
         if auxilary_task_net is not None:
-            subword_params = (subword_params + list(
-                auxilary_task_net.collect_params().values()))
+            subword_params += list(auxilary_task_net.collect_params().values())
         subword_trainer = trainer.get_subword_trainer(args, subword_params)
 
     # Logging writer
@@ -230,7 +221,8 @@ def train(args):
         for i, batch_idx in tqdm.tqdm(
                 enumerate(batches), total=len(batches), ascii=True,
                 smoothing=1):
-            mx.nd.waitall()  # wait to avoid cudnn memory related crashes
+            if 'rnn' in args.subword_network.lower():
+                mx.nd.waitall()  # wait to avoid cudnn memory related crashes
 
             batch = train_dataset[batch_idx]
             (source, target, label, unique_sources_indices_np,
@@ -419,5 +411,5 @@ def train(args):
 if __name__ == '__main__':
     logging.basicConfig()
     logging.getLogger().setLevel(logging.INFO)
-    args_ = arguments.get_and_setup([add_parameters])
+    args_ = arguments.get_and_setup()
     train(args_)

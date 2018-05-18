@@ -65,16 +65,6 @@ def get_args(parameter_adders=None):
                              'If not specified, uses CPU.'))
     group.add_argument('--dont-hybridize', action='store_true',
                        help='Disable hybridization of gluon HybridBlocks.')
-    group.add_argument('--normalize-gradient', type=str, default='none',
-                       help='Normalize the word embedding gradient row-wise. '
-                       'Supported are [None, count, L2].')
-    group.add_argument(
-        '--force-py-op-normalize-gradient', action='store_true',
-        help='Always use Python sparse L2 normalization operator.')
-    group.add_argument('--use-threaded-data-workers', action='store_true',
-                       help='Enable threaded data pre-fetching.')
-    group.add_argument('--num-data-workers', type=int, default=5,
-                       help='Number of threads to preload data.')
 
     # Logging options
     group = parser.add_argument_group('Logging arguments')
@@ -87,6 +77,14 @@ def get_args(parameter_adders=None):
     group = parser.add_argument_group('Debugging arguments')
     group.add_argument('--debug', action='store_true',
                        help='Enable debug mode checks.')
+
+    # Deprecated arguments
+    group.add_argument('--normalize-gradient', type=str, default='none',
+                       help='Normalize the word embedding gradient row-wise. '
+                       'Supported are [None, count, L2].')
+    group.add_argument(
+        '--force-py-op-normalize-gradient', action='store_true',
+        help='Always use Python sparse L2 normalization operator.')
 
     # Add further argument groups
     subword.add_parameters(parser)

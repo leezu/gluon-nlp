@@ -268,52 +268,39 @@ def _preprocess_sentences_map_reduce(args):
 def _get_train_dataset(args, vocab, coded, sentence_boundaries=None):
     idx_to_counts = np.array(vocab.idx_to_counts, dtype=int)
     # Get index to byte mapping from vocab
-
     if args.objective.lower() == 'skipgram':
-        # TODO: Enable SkipGramWordEmbeddingDataset without subword_vocab
-        # if not args.subword_network.lower():
-        #     subword_vocab = None
-        #     dataset = nlp.data.SkipGramWordEmbeddingDataset(
-        #         coded, idx_to_counts)
-        if args.subword_network.lower() != 'fasttext':
-            with utils.print_time('create subword vocabulary'):
-                if args.subword_function.lower() == 'byte':
-                    subword_function = nlp.vocab.create('ByteSubwords')
-                elif args.subword_function.lower() == 'character':
-                    subword_function = nlp.vocab.create(
-                        'CharacterSubwords', vocabulary=vocab)
-                subword_vocab = nlp.SubwordVocab(
-                    idx_to_token=vocab.idx_to_token,
-                    subword_function=subword_function, merge_indices=False)
-
-            # Get subword network data requirements
-            if args.subword_network:
-                min_size = subword.list_subwordnetworks(
-                    args.subword_network).min_size
-            else:
-                min_size = 1
-            with utils.print_time('create skipgram dataset'):
-                dataset = nlp.data.SkipGramWordEmbeddingDataset(
-                    coded=coded, idx_to_counts=idx_to_counts,
-                    subword_vocab=subword_vocab, min_size=min_size,
-                    sentence_boundaries=sentence_boundaries)
-            # TODO: Enable SkipGramWordEmbeddingDataset without subword_vocab
-            # As a workaround, set subword_vocab to None here
-            if not args.subword_network.lower():
-                subword_vocab = None
-        else:  # Optimized fasttext data iterator for fasttext
-            with utils.print_time('create subword vocabulary'):
+        # TODO don't create subword vocab when not needed
+        with utils.print_time('create subword vocabulary'):
+            if args.subword_function.lower() == 'byte':
+                subword_function = nlp.vocab.create('ByteSubwords')
+            elif args.subword_function.lower() == 'character':
+                subword_function = nlp.vocab.create('CharacterSubwords',
+                                                    vocabulary=vocab)
+            elif args.subword_function.lower() == 'ngrams':
                 subword_function = nlp.vocab.create(
                     'NGramSubwords', vocabulary=vocab, ngrams=[3, 4, 5, 6],
                     max_num_subwords=1000000)
-                subword_vocab = nlp.SubwordVocab(
-                    idx_to_token=vocab.idx_to_token,
-                    subword_function=subword_function, merge_indices=True)
-            with utils.print_time('create skipgram dataset'):
-                dataset = nlp.data.SkipGramFasttextWordEmbeddingDataset(
-                    coded=coded, idx_to_counts=idx_to_counts,
-                    subword_vocab=subword_vocab, min_size=1,
-                    sentence_boundaries=sentence_boundaries)
+            subword_vocab = nlp.SubwordVocab(idx_to_token=vocab.idx_to_token,
+                                             subword_function=subword_function,
+                                             merge_indices=False)
+
+        # Get subword network data requirements
+        if args.subword_network:
+            min_size = subword.list_subwordnetworks(
+                args.subword_network).min_size
+        else:
+            min_size = 1
+
+        with utils.print_time('create skipgram dataset'):
+            dataset = nlp.data.SkipGramWordEmbeddingDataset(
+                coded=coded, idx_to_counts=idx_to_counts,
+                subword_vocab=subword_vocab, min_size=min_size,
+                sentence_boundaries=sentence_boundaries)
+
+        # TODO: Enable SkipGramWordEmbeddingDataset without subword_vocab
+        # As a workaround, set subword_vocab to None here
+        if not args.subword_network:
+            subword_vocab = None
     else:
         raise NotImplementedError('Objective {} not implemented.'.format(
             args.objective))

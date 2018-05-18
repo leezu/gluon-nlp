@@ -40,26 +40,37 @@ def add_parameters(parser):
     group.add_argument('--word-lr', type=float, default=0.1,
                        help='Learning rate for embeddings matrix.')
     group.add_argument('--word-l2', type=float, default=0.00001)
-    group.add_argument('--word-wd', type=float, default=0)
 
-    group = parser.add_argument_group('Subword level optimization arguments')
-    group.add_argument('--subword-optimizer', type=str, default='adagrad',
+    group = parser.add_argument_group(
+        'Dense subword network optimization arguments')
+    group.add_argument('--subword-dense-optimizer', type=str,
+                       default='adagrad',
                        help='Optimizer used to train subword network.')
-    group.add_argument('--subword-lr', type=float, default=0.01,
+    group.add_argument('--subword-dense-lr', type=float, default=0.01,
                        help='Learning rate for subword embedding network.')
-    group.add_argument('--subword-wd', type=float, default=1.2e-6,
+    group.add_argument('--subword-dense-wd', type=float, default=1.2e-6,
                        help='Weight decay for subword embedding network.')
-    group.add_argument('--subword-momentum', type=float, default=0.9,
-                       help='Momentum for subword-optimizer, if supported.')
+    group.add_argument('--subword-dense-momentum', type=float, default=0.9,
+                       help='Momentum for subword-dense-optimizer.')
+
+    group = parser.add_argument_group(
+        'Sparse subword network optimization arguments')
+    group.add_argument('--subword-sparse-optimizer', type=str,
+                       default='proximalsgd',
+                       help='Optimizer used to train subword network.')
+    group.add_argument('--subword-sparse-lr', type=float, default=0.01,
+                       help='Learning rate for subword embedding network.')
+    group.add_argument('--subword-sparse-l2', type=float, default=0.00001,
+                       help='Learning rate for subword embedding network.')
 
 
 def get_embedding_in_trainer(args, params):
     if args.word_optimizer.lower() == 'proximalsgd':
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.word_optimizer, learning_rate=args.word_lr, l2=args.word_l2)
-    elif args.subword_optimizer.lower() == 'sgd':
+    elif args.word_optimizer.lower() == 'sgd':
         optimizer = mx.optimizer.Optimizer.create_optimizer(
-            args.word_optimizer, learning_rate=args.word_lr, wd=args.word_wd)
+            args.word_optimizer, learning_rate=args.word_lr)
     else:
         logging.error('Unsupported optimizer')
         sys.exit(1)
@@ -73,14 +84,37 @@ def get_embedding_out_trainer(args, params):
 
 
 def get_subword_trainer(args, params):
-    if args.subword_optimizer.lower() == 'sgd':
+    """Parase args depending on subwort network and return trainer."""
+    if args.subword_network.lower() in ['sumreduce', 'fasttext']:
+        return _get_sparse_subword_trainer(args, params)
+    else:
+        return _get_dense_subword_trainer(args, params)
+
+
+def _get_sparse_subword_trainer(args, params):
+    if args.subword_sparse_optimizer.lower() == 'proximalsgd':
         optimizer = mx.optimizer.Optimizer.create_optimizer(
-            args.subword_optimizer, learning_rate=args.subword_lr,
-            wd=args.subword_wd, momentum=args.subword_momentum)
-    elif args.subword_optimizer.lower() in ['adam', 'adagrad']:
+            args.subword_sparse_optimizer,
+            learning_rate=args.subword_sparse_lr, l2=args.subword_sparse_l2)
+    elif args.subword_sparse_optimizer.lower() == 'sgd':
         optimizer = mx.optimizer.Optimizer.create_optimizer(
-            args.subword_optimizer, learning_rate=args.subword_lr,
-            wd=args.subword_wd)
+            args.subword_sparse_optimizer,
+            learning_rate=args.subword_sparse_lr)
+    else:
+        logging.error('Unsupported optimizer')
+        sys.exit(1)
+    return gluon.Trainer(params, optimizer)
+
+
+def _get_dense_subword_trainer(args, params):
+    if args.subword_dense_optimizer.lower() == 'sgd':
+        optimizer = mx.optimizer.Optimizer.create_optimizer(
+            args.subword_dense_optimizer, learning_rate=args.subword_dense_lr,
+            wd=args.subword_dense_wd, momentum=args.subword_dense_momentum)
+    elif args.subword_dense_optimizer.lower() in ['adam', 'adagrad']:
+        optimizer = mx.optimizer.Optimizer.create_optimizer(
+            args.subword_dense_optimizer, learning_rate=args.subword_dense_lr,
+            wd=args.subword_dense_wd)
     else:
         logging.error('Unsupported optimizer')
         sys.exit(1)
