@@ -252,6 +252,8 @@ class _WordEmbeddingDataset(Dataset):
 ###############################################################################
 class SkipGramWordEmbeddingDataset(_WordEmbeddingDataset):
     def __getitem__(self, idx):
+        single_element = True if isinstance(idx, int) else False
+
         # Make sure idx is of shape (batch_size,)
         idx = np.array(idx).flatten()
         (source, target, label, unique_sources_indices, unique_sources_counts,
@@ -263,7 +265,7 @@ class SkipGramWordEmbeddingDataset(_WordEmbeddingDataset):
         source_subword = npi.remap(
             source.flatten(), unique_sources_indices,
             np.arange(unique_sources_indices.shape[0])).reshape(source.shape)
-        if len(idx) == 1:
+        if single_element:
             return (source[0], target[0], label[0], unique_sources_indices,
                     unique_sources_counts, unique_sources_subwordsequences,
                     source_subword[0], unique_sources_subwordsequences_mask,
@@ -401,6 +403,8 @@ def _build_sg_item(coded, idx, window, negative, token_freq_cumsum,
 ###############################################################################
 class SkipGramFasttextWordEmbeddingDataset(_WordEmbeddingDataset):
     def __getitem__(self, idx):
+        single_element = True if isinstance(idx, int) else False
+
         # Make sure idx is of shape (batch_size,)
         idx = np.array(idx).flatten()
         (source, target, label, subword_mask, unique_sources_indices,
@@ -409,7 +413,7 @@ class SkipGramFasttextWordEmbeddingDataset(_WordEmbeddingDataset):
              self.coded, idx, self.window, self.negative,
              self._smoothed_token_freq_cumsum, self._sentence_boundaries,
              self.idx_to_subwordidxs, self.keep_max_size, self.min_size)
-        if len(idx) == 1:
+        if single_element:
             return (source[0], target[0], label[0], subword_mask[0],
                     unique_sources_indices, unique_sources_counts,
                     unique_targets_indices, unique_targets_counts)
