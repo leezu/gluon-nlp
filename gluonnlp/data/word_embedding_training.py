@@ -250,6 +250,7 @@ class SkipGramWordEmbeddingDataset(_WordEmbeddingDataset):
         idx = np.array(idx).flatten()
         (source, target, label, unique_sources_indices, unique_sources_counts,
          unique_sources_subwordsequences, unique_sources_subwordsequences_mask,
+         unique_sources_subwordsequences_count_nonmasked,
          unique_targets_indices, unique_targets_counts) = _build_sg_batch(
              self.coded, idx, self.window, self.negative,
              self._smoothed_token_freq_cumsum, self._sentence_boundaries,
@@ -261,11 +262,13 @@ class SkipGramWordEmbeddingDataset(_WordEmbeddingDataset):
             return (source[0], target[0], label[0], unique_sources_indices,
                     unique_sources_counts, unique_sources_subwordsequences,
                     source_subword[0], unique_sources_subwordsequences_mask,
+                    unique_sources_subwordsequences_count_nonmasked,
                     unique_targets_indices, unique_targets_counts)
         else:
             return (source, target, label, unique_sources_indices,
                     unique_sources_counts, unique_sources_subwordsequences,
                     source_subword, unique_sources_subwordsequences_mask,
+                    unique_sources_subwordsequences_count_nonmasked,
                     unique_targets_indices, unique_targets_counts)
 
 
@@ -295,16 +298,17 @@ def _build_sg_batch(coded, idxs, window, negative, token_freq_cumsum,
     unique_sources_indices, unique_sources_counts = np_unique_wcounts(sources)
     unique_sources_subwordsequences = idx_to_subwordidxs[
         unique_sources_indices.astype(np.int32)]
-    (unique_sources_subwordsequences,
-     unique_sources_subwordsequences_mask) = _mask_2d(
+    (unique_sources_subwordsequences, unique_sources_subwordsequences_mask,
+     unique_sources_subwordsequences_count_nonmasked) = _mask_2d(
          unique_sources_subwordsequences, keep_max_size, min_size)
 
     unique_targets_indices, unique_targets_counts = np_unique_wcounts(targets)
 
     return (sources, targets, labels, unique_sources_indices,
             unique_sources_counts, unique_sources_subwordsequences,
-            unique_sources_subwordsequences_mask, unique_targets_indices,
-            unique_targets_counts)
+            unique_sources_subwordsequences_mask,
+            unique_sources_subwordsequences_count_nonmasked,
+            unique_targets_indices, unique_targets_counts)
 
 
 @numba.njit(nogil=True)
@@ -312,6 +316,7 @@ def _mask_2d(array, keep_max_size, min_size):
     assert len(array.shape) == 2
     token_length = np.zeros((array.shape[0], ))
     mask = np.zeros_like(array)
+    count_nonmasked = 0
     for i in numba.prange(array.shape[0]):
         length = np.argmax(array[i] == -1)
         if length == 0:  # If -1 is not present
@@ -319,12 +324,13 @@ def _mask_2d(array, keep_max_size, min_size):
         token_length[i] = length
         array[i, length:] = 0
         mask[i, :length] = 1
+        count_nonmasked += length
     # Throw away unneeded padding zeros
     if not keep_max_size:
         new_length = max(np.max(token_length), min_size + 1)
         array = array[:, :new_length]
         mask = mask[:, :new_length]
-    return array, mask
+    return array, mask, count_nonmasked
 
 
 @numba.njit(nogil=True)

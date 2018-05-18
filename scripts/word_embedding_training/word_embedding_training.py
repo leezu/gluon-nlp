@@ -228,6 +228,7 @@ def train(args):
             (source, target, label, unique_sources_indices_np,
              unique_sources_counts, unique_sources_subwordsequences,
              source_subword, unique_sources_subwordsequences_mask,
+             unique_sources_subwordsequences_count_nonmasked,
              unique_targets_indices, unique_targets_counts) = batch
 
             unique_sources_subwordsequences_last_valid = \
@@ -247,6 +248,8 @@ def train(args):
             # Split and load subword info to all GPUs for accelerated computation
             assert unique_sources_subwordsequences.shape == \
                 unique_sources_subwordsequences_mask.shape
+            num_unique_subwordsequences = \
+                unique_sources_subwordsequences.shape[0]
             unique_sources_indices = gluon.utils.split_and_load(
                 unique_sources_indices_np, context, even_split=False)
             unique_sources_subwordsequences = gluon.utils.split_and_load(
@@ -292,7 +295,13 @@ def train(args):
 
             # Update parameters
             if subword_net is not None:
-                subword_trainer.step(batch_size=subword_embeddings.shape[0])
+                if args.subword_network.lower() in ['fasttext', 'sumreduce']:
+                    subword_trainer.step(
+                        batch_size=
+                        unique_sources_subwordsequences_count_nonmasked)
+                else:
+                    subword_trainer.step(
+                        batch_size=num_unique_subwordsequences)
             if embedding_in is not None:
                 # Force eager update before evaluation
                 if i % args.eval_interval == 0:
@@ -300,12 +309,14 @@ def train(args):
                     trainer.normalize_sparse_grads(args, embedding_in,
                                                    unique_sources_counts,
                                                    unique_sources_indices_np)
-                embedding_in_trainer.step(batch_size=args.batch_size)
+                embedding_in_trainer.step(
+                    batch_size=source.shape[0] * source.shape[1])
                 embedding_in_trainer.lazy_update = True
             trainer.normalize_sparse_grads(args, embedding_out,
                                            unique_targets_counts,
                                            unique_targets_indices)
-            embedding_out_trainer.step(batch_size=args.batch_size)
+            embedding_out_trainer.step(
+                batch_size=target.shape[0] * target.shape[1])
 
             # Logging
             if i % args.eval_interval == 0:
