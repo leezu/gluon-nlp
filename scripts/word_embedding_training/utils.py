@@ -23,6 +23,7 @@ import os
 import tempfile
 import time
 from contextlib import contextmanager
+import numpy as np
 
 import mxnet as mx
 
@@ -47,23 +48,28 @@ def get_context(args):
     return context
 
 
-def train_embedding(args, param_data, param_grad, grad_normalization=None,
-                    with_sparsity=False, last_update_buffer=None,
-                    current_update=None, lazy_update=True):
-    if (not args.normalize_gradient
-            or args.normalize_gradient.lower() == 'none'
-            or (param_grad is None)):
-        pass
-    else:
-        if args.normalize_gradient.lower() == 'count':
-            assert grad_normalization is not None
-            norm = grad_normalization
-        elif args.normalize_gradient.lower() == 'l2':
-            norm = mx.nd.sparse.sqrt(
-                mx.nd._internal._square_sum(param_grad, axis=1, keepdims=True))
-        else:
-            raise NotImplementedError
+def update_embedding_block(args, embedding_block, unique_counts=None,
+                           unique_indices=None, grad_normalization=None,
+                           with_sparsity=False, last_update_buffer=None,
+                           current_update=None, lazy_update=True):
+    context = get_context(args)
 
+    param_data = embedding_block.weight.data(context[0])
+    param_grad = embedding_block.weight.grad(context[0])
+
+    if args.normalize_gradient.lower() == 'none':
+        norm = None
+    elif args.normalize_gradient.lower() == 'count':
+        assert grad_normalization is not None
+        norm = mx.nd.sparse.row_sparse_array((unique_counts.reshape(
+            (-1, 1)), unique_indices), ctx=context[0], dtype=np.float32)
+    elif args.normalize_gradient.lower() == 'l2':
+        norm = mx.nd.sparse.sqrt(
+            mx.nd._internal._square_sum(param_grad, axis=1, keepdims=True))
+    else:
+        raise NotImplementedError
+
+    if norm is not None:
         if (hasattr(mx.nd.sparse, 'dense_division')
                 and not args.force_py_op_normalize_gradient):
             mx.nd.sparse.dense_division(param_grad, norm, out=param_grad)
@@ -71,10 +77,11 @@ def train_embedding(args, param_data, param_grad, grad_normalization=None,
             param_grad = mx.nd.Custom(param_grad, norm,
                                       op_type='dense_division')
 
-    if with_sparsity:  # embedding_in
+    if with_sparsity:
         assert current_update is not None
         assert param_data.shape[0] == last_update_buffer.shape[0]
-        assert last_update_buffer.max().asscalar() < current_update
+        if args.debug:
+            assert last_update_buffer.max().asscalar() < current_update
 
         if param_grad is None:  # Helper to force eager update with grad
             param_grad = mx.nd.sparse.row_sparse_array(param_data.shape,

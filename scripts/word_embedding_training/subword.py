@@ -32,21 +32,22 @@ import self_attention
 ###############################################################################
 # Hyperparameters
 ###############################################################################
-def add_subword_parameters_to_parser(parser):
-    group = parser.add_argument_group('Subword networks hyperparameters')
+def add_parameters(parser):
+    group = parser.add_argument_group('Subword networks')
     group.add_argument('--subword-embedding-size', type=int, default=20,
                        help='Embedding size for each subword piece.')
     group.add_argument('--subword-embedding-dropout', type=float, default=0.0,
                        help='Embedding size for each subword piece.')
 
     _selfattention_args(parser)
+    _last_output_args(parser)
     _subwordrnn_args(parser)
     _awdrnn_args(parser)
     _wordprediction_args(parser)
 
 
 def _selfattention_args(parser):
-    group = parser.add_argument_group('Subword networks hyperparameters')
+    group = parser.add_argument_group('Subword Embedding: Self Attention')
     group.add_argument('--self-attention-num-units', type=int, default=350)
     group.add_argument('--self-attention-num-attention', type=int, default=10)
     group.add_argument('--self-attention-dropout', type=float, default=0.0)
@@ -54,23 +55,23 @@ def _selfattention_args(parser):
                        default=1.0)
 
 
+def _last_output_args(parser):
+    group = parser.add_argument_group('Subword Embedding: Last Output')
+    group.add_argument('--last-output-hidden-size', type=int, default=1000)
+
+
 def _subwordrnn_args(parser):
-    group = parser.add_argument_group('SubwordRNN hyperparameters.')
-    group.add_argument('--subwordrnn-mode', type=str, default='gru')
-    group.add_argument('--subwordrnn-hidden-size', type=int, default=150)
-    group.add_argument('--subwordrnn-num-layers', type=int, default=1)
+    group = parser.add_argument_group('Subword Network: SubwordRNN')
+    group.add_argument('--subwordrnn-mode', type=str, default='lstm')
+    group.add_argument('--subwordrnn-hidden-size', type=int, default=1000)
+    group.add_argument('--subwordrnn-num-layers', type=int, default=3)
     group.add_argument('--subwordrnn-encoder-dropout', type=float, default=0.0)
     group.add_argument('--subwordrnn-no-bidirectional', default=False,
                        action='store_true')
-    group.add_argument('--subwordrnn-self-attention', default=False,
-                       action='store_true',
-                       help='If True, use self-attention on RNN states '
-                       'to compute word embedding. '
-                       'Otherwise use final states.')
 
 
 def _awdrnn_args(parser):
-    group = parser.add_argument_group('Pretrained AWDRNN.')
+    group = parser.add_argument_group('Subword Network: AWDRNN')
     group.add_argument('--awdrnn-path', type=str, default='model.params',
                        help='Path to pretrained parameters.')
     group.add_argument('--awdrnn-model', type=str, default='lstm',
@@ -145,6 +146,12 @@ def create(name, args, **kwargs):
             num_units=args.self_attention_num_units,
             num_attention=args.self_attention_num_attention,
             dropout=args.self_attention_dropout,
+            **kwargs,
+        )
+    elif name.lower() == 'lastoutputembedding':
+        kwargs = dict(
+            hidden_size=args.last_output_hidden_size,
+            output_size=args.emsize,
             **kwargs,
         )
     elif name.lower() == 'wordprediction':
@@ -471,29 +478,28 @@ class SelfAttentionEmbedding(SubwordNetwork, gluon.HybridBlock):
 class LastOutputEmbedding(SubwordNetwork):
     """Predicts an embedding from a sequence."""
 
-    def __init__(self, output_size, num_units, num_attention, dropout,
-                 **kwargs):
+    def __init__(self, hidden_size, output_size, **kwargs):
         super(LastOutputEmbedding, self).__init__(**kwargs)
 
+        self.hidden_size = hidden_size
         self.output_size = output_size
 
         with self.name_scope():
-            self.rnn_to_rep = gluon.nn.Dense(self.output_size, flatten=False,
+            self.rnn_to_rep = gluon.nn.Dense(self.hidden_size, flatten=False,
                                              activation='tanh')
-            self.decoder = self._get_decoder()
-
-    def _get_decoder(self):
-        return gluon.nn.Dense(self.output_size, flatten=True)
+            self.decoder = gluon.nn.Dense(
+                self.output_size, in_units=self.hidden_size, flatten=True)
 
     def forward(self, inputs, last_valid):
         """Defines the forward computation. Arguments can be either
         :py:class:`NDArray` or :py:class:`Symbol`."""
         F = mx.nd
 
-        enc = inputs[last_valid, F.arange(inputs.shape[0], ctx=inputs.context)]
+        enc = inputs[(last_valid, F.arange(inputs.shape[1],
+                                           ctx=inputs.context))]
         rep = self.rnn_to_rep(enc)
         out = self.decoder(rep)
-        return out, None
+        return out
 
 
 @register

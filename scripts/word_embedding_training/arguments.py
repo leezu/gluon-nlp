@@ -31,7 +31,7 @@ import subword
 import utils
 
 
-def get_args():
+def get_args(parameter_adders=None):
     """Construct the argument parser."""
     parser = argparse.ArgumentParser(
         description='Word embedding training with Gluon.',
@@ -47,14 +47,8 @@ def get_args():
         help=('Network architecture to encode subword level information. ' +
               str(subword.list_subwordnetworks()) +
               ' , fasttext or empty to disable'))
-    group.add_argument(
-        '--embedding-network', default='SelfAttentionEmbedding',
-        help='Network architecture to create embedding from encoded subwords.')
-    group.add_argument('--subword-function', type=str, default='character')
     group.add_argument('--objective', type=str, default='skipgram',
                        help='Word embedding training objective.')
-    group.add_argument('--auxilary-task', action='store_true',
-                       help='Use auxilary word prediction task.')
     group.add_argument('--emsize', type=int, default=300,
                        help='Size of word embeddings')
     group.add_argument(
@@ -89,9 +83,7 @@ def get_args():
                              'If not specified, uses CPU.'))
     group.add_argument('--dont-hybridize', action='store_true',
                        help='Disable hybridization of gluon HybridBlocks.')
-    group.add_argument('--no-normalize-embeddings', action='store_true',
-                       help='Normalize the word embeddings row-wise.')
-    group.add_argument('--normalize-gradient', type=str, default='count',
+    group.add_argument('--normalize-gradient', type=str, default='none',
                        help='Normalize the word embedding gradient row-wise. '
                        'Supported are [None, count, L2].')
     group.add_argument(
@@ -106,14 +98,7 @@ def get_args():
     group = parser.add_argument_group('Optimization arguments')
     group.add_argument('--embeddings-lr', type=float, default=0.1,
                        help='Learning rate for embeddings matrix.')
-    group.add_argument('--dense-lr', type=float, default=0.1,
-                       help='Learning rate for subword embedding network.')
-    group.add_argument('--dense-wd', type=float, default=1.2e-6,
-                       help='Weight decay for subword embedding network.')
-    group.add_argument('--dense-optimizer', type=str, default='adam',
-                       help='Optimizer used to train subword network.')
-    group.add_argument('--dense-momentum', type=float, default=0.9,
-                       help='Momentum for dense-optimizer, if supported.')
+
     # Logging options
     group = parser.add_argument_group('Logging arguments')
     group.add_argument('--logdir', type=str, default=None,
@@ -121,10 +106,19 @@ def get_args():
                        'Tensorboard compatible logs are stored there. '
                        'Defaults to a random directory in ./logs')
 
+    # Debugging arguments
+    group = parser.add_argument_group('Debugging arguments')
+    group.add_argument('--debug', action='store_true',
+                       help='Enable debug mode checks.')
+
     # Add further argument groups
-    subword.add_subword_parameters_to_parser(parser)
+    subword.add_parameters(parser)
     data.add_parameters(parser)
     plot.add_parameters(parser)
+
+    if parameter_adders is not None:
+        for f in parameter_adders:
+            f(parser)
 
     args = parser.parse_args()
 
@@ -167,8 +161,8 @@ def setup_logging(args):
     logging.info('Logging to {}'.format(args.logdir))
 
 
-def get_and_setup():
-    args_ = get_args()
+def get_and_setup(*args, **kwargs):
+    args_ = get_args(*args, **kwargs)
     validate_args(args_)
     setup_logging(args_)
     return args_

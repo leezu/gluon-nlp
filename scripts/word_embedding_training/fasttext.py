@@ -23,24 +23,25 @@ This example shows how to train word embeddings.
 
 """
 
-import math
-import multiprocessing as mp
-
+import logging
 import mxnet as mx
 import numpy as np
-from mxboard import SummaryWriter
 import tqdm
+from mxboard import SummaryWriter
 from mxnet import gluon
 
+import arguments
+import bounded_executor
 import data
 import evaluation
 import utils
-import bounded_executor
 
-try:
-    import tqdm
-except ImportError:
-    tqdm = None
+
+###############################################################################
+# Hyperparameters
+###############################################################################
+def add_parameters(parser):
+    pass
 
 
 ###############################################################################
@@ -100,16 +101,12 @@ def train(args):
                 for i in range(0, len(indices), args.batch_size)
             ]
 
-        if tqdm is not None:
-            t = tqdm.trange(len(batches), smoothing=1)
-        else:
-            t = range(len(batches))
-
         if args.use_threaded_data_workers:
             executor = bounded_executor.BoundedExecutor(
                 bound=100, max_workers=args.num_data_workers)
             batches = executor.map(train_dataset.__getitem__, batches)
-        for i, batch in zip(t, batches):
+        for i, batch in tqdm.tqdm(
+                enumerate(batches), total=len(batches), ascii=True):
             if not args.use_threaded_data_workers:
                 batch = train_dataset[batch]
             (source, target, label, subword_mask, unique_sources_indices,
@@ -132,29 +129,22 @@ def train(args):
 
             loss.backward()
 
-            if i % args.eval_interval == 0:
-                lazy_update = False  # Force eager update before evaluation
-            else:
-                lazy_update = True
-            emb_in_grad_normalization = mx.nd.sparse.row_sparse_array(
-                (unique_sources_counts.reshape(
-                    (-1, 1)), unique_sources_indices), ctx=context[0],
-                dtype=np.float32)
-            utils.train_embedding(
-                args, embedding_in.weight.data(context[0]),
-                embedding_in.weight.grad(
-                    context[0]), emb_in_grad_normalization, with_sparsity=True,
+            # Force eager update before evaluation
+            lazy_update = False if i % args.eval_interval == 0 else True
+            utils.update_embedding_block(
+                args,
+                embedding_in,
+                unique_sources_counts,
+                unique_sources_indices,
+                with_sparsity=True,
                 last_update_buffer=last_update_buffer,
-                current_update=current_update, lazy_update=lazy_update)
+                current_update=current_update,
+                lazy_update=lazy_update,
+            )
             # Training of emb_out
-            emb_out_grad_normalization = mx.nd.sparse.row_sparse_array(
-                (unique_targets_counts.reshape(
-                    (-1, 1)), unique_targets_indices), ctx=context[0],
-                dtype=np.float32)
-            utils.train_embedding(args, embedding_out.weight.data(context[0]),
-                                  embedding_out.weight.grad(context[0]),
-                                  emb_out_grad_normalization)
-
+            utils.update_embedding_block(args, embedding_out,
+                                         unique_targets_counts,
+                                         unique_targets_indices)
             current_update += 1
 
             if i % args.eval_interval == 0:
@@ -199,7 +189,7 @@ def train(args):
                 sw.add_scalar(tag='loss', value=loss.mean().asscalar(),
                               global_step=current_update)
 
-                eval_dict = evaluation.evaluate(args, embedding_in, None,
+                eval_dict = evaluation.evaluate(args, embedding_in, None, None,
                                                 vocab, subword_vocab, sw)
                 for k, v in eval_dict.items():
                     sw.add_scalar(tag=k, value=float(v),
@@ -214,3 +204,10 @@ def train(args):
         # Shut down data preloading executor
         if args.use_threaded_data_workers:
             executor.shutdown()
+
+
+if __name__ == '__main__':
+    logging.basicConfig()
+    logging.getLogger().setLevel(logging.INFO)
+    args_ = arguments.get_and_setup([add_parameters])
+    train(args_)

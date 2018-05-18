@@ -102,6 +102,7 @@ def construct_vocab_embedding_for_dataset(args, tokens, vocab, embedding_in,
 
         # 3. Compute
         if subword_net is not None:
+            import ipdb; ipdb.set_trace()
             encoded, states = subword_net(known_tokens_subword_indices_nd,
                                           known_tokens_subword_indices_mask_nd)
 
@@ -109,7 +110,7 @@ def construct_vocab_embedding_for_dataset(args, tokens, vocab, embedding_in,
                 token_subword_embeddings, _ = embedding_net(
                     encoded, known_tokens_subword_indices_mask_nd)
             else:
-                token_subword_embeddings, _ = embedding_net(
+                token_subword_embeddings = embedding_net(
                     encoded, known_tokens_subword_indices_last_valid_nd)
         else:  # Subword indices should be applicable for embedding_in
             subword_embeddings = embedding_in(known_tokens_subword_indices_nd)
@@ -199,7 +200,7 @@ def evaluate_similarity(args, vocab, subword_vocab, embedding_in, subword_net,
         ]
         mxboard_summary_writer.add_embedding(
             tag='similarity-{}'.format(dataset_name_wkwargs),
-            embedding=idx_to_vec, labels=idx_to_token)
+            embedding=idx_to_vec.as_in_context(mx.cpu()), labels=idx_to_token)
 
     if not dataset_coded:
         logging.info('Dataset {} contains only OOV. Skipping.'.format(
