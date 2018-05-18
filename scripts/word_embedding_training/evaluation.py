@@ -42,8 +42,6 @@ def construct_vocab_embedding_for_dataset(args, tokens, vocab, embedding_in,
     assert embedding_in is not None or subword_net is not None
 
     context = utils.get_context(args)
-    token_subword_embeddings = []
-
     known_tokens = []
     known_tokens_subwordindices = []
     token_mask = []
@@ -87,38 +85,48 @@ def construct_vocab_embedding_for_dataset(args, tokens, vocab, embedding_in,
                 subword_indices
             known_tokens_subwordindices_mask_np[i, :len(subword_indices)] = 1
 
-        # 2. Copy to device
-        known_tokens_subword_indices_nd = mx.nd.array(
-            known_tokens_subwordindices_np, ctx=context[0])
-        known_tokens_subword_indices_mask_nd = mx.nd.array(
-            known_tokens_subwordindices_mask_np, ctx=context[0])
-        known_tokens_subword_indices_last_valid = \
-                (known_tokens_subwordindices_mask_np == 0).argmax(axis=1) - 1
-        known_tokens_subword_indices_last_valid[
-            known_tokens_subword_indices_last_valid ==
-            -1] = known_tokens_subwordindices_mask_np.shape[1] - 1
-        known_tokens_subword_indices_last_valid_nd = mx.nd.array(
-            known_tokens_subword_indices_last_valid, ctx=context[0])
+        # 2. Copy to device in batches
+        dataset_size = known_tokens_subwordindices_np.shape[0]
+        token_subword_embeddings_all = []
+        for i in range(0, dataset_size, args.batch_size):
+            known_tokens_subword_indices_nd = mx.nd.array(
+                known_tokens_subwordindices_np[i:i + args.batch_size],
+                ctx=context[0])
+            known_tokens_subword_indices_mask_nd = mx.nd.array(
+                known_tokens_subwordindices_mask_np[i:i + args.batch_size],
+                ctx=context[0])
+            known_tokens_subword_indices_last_valid = \
+                (known_tokens_subwordindices_mask_np[i:i+args.batch_size] == 0) \
+                .argmax(axis=1) - 1
+            known_tokens_subword_indices_last_valid[
+                known_tokens_subword_indices_last_valid ==
+                -1] = known_tokens_subwordindices_mask_np.shape[1] - 1
+            known_tokens_subword_indices_last_valid_nd = mx.nd.array(
+                known_tokens_subword_indices_last_valid, ctx=context[0])
 
-        # 3. Compute
-        if subword_net is not None:
-            import ipdb; ipdb.set_trace()
-            encoded, states = subword_net(known_tokens_subword_indices_nd,
-                                          known_tokens_subword_indices_mask_nd)
+            # 3. Compute
+            if subword_net is not None:
+                encoded, states = subword_net(
+                    known_tokens_subword_indices_nd,
+                    known_tokens_subword_indices_mask_nd)
 
-            if args.embedding_network.lower() == 'selfattentionembedding':
-                token_subword_embeddings, _ = embedding_net(
-                    encoded, known_tokens_subword_indices_mask_nd)
-            else:
-                token_subword_embeddings = embedding_net(
-                    encoded, known_tokens_subword_indices_last_valid_nd)
-        else:  # Subword indices should be applicable for embedding_in
-            subword_embeddings = embedding_in(known_tokens_subword_indices_nd)
-            masked_subword_embeddings = mx.nd.broadcast_mul(
-                subword_embeddings,
-                known_tokens_subword_indices_mask_nd.expand_dims(-1))
-            token_subword_embeddings = mx.nd.sum(masked_subword_embeddings,
-                                                 axis=-2)
+                if args.embedding_network.lower() == 'selfattentionembedding':
+                    token_subword_embeddings, _ = embedding_net(
+                        encoded, known_tokens_subword_indices_mask_nd)
+                else:
+                    token_subword_embeddings = embedding_net(
+                        encoded, known_tokens_subword_indices_last_valid_nd)
+            else:  # Subword indices should be applicable for embedding_in
+                subword_embeddings = embedding_in(
+                    known_tokens_subword_indices_nd)
+                masked_subword_embeddings = mx.nd.broadcast_mul(
+                    subword_embeddings,
+                    known_tokens_subword_indices_mask_nd.expand_dims(-1))
+                token_subword_embeddings = mx.nd.sum(masked_subword_embeddings,
+                                                     axis=-2)
+            token_subword_embeddings_all.append(token_subword_embeddings)
+        token_subword_embeddings = mx.nd.concat(*token_subword_embeddings_all,
+                                                dim=0)
 
     else:
         assert subword_net is None, \
