@@ -34,7 +34,7 @@ from mxnet import gluon
 import arguments
 import data
 import evaluation
-import subword
+import model
 import utils
 import trainer
 
@@ -50,67 +50,6 @@ def add_parameters(parser):
     group.add_argument('--subword-function', type=str, default='byte')
     group.add_argument('--auxilary-task', action='store_true',
                        help='Use auxilary word prediction task.')
-
-
-###############################################################################
-# Build the model
-###############################################################################
-def get_model(args, train_dataset, vocab, subword_vocab):
-    assert not (args.no_token_embedding and not args.subword_network)
-    num_tokens = train_dataset.num_tokens
-    context = utils.get_context(args)
-    embeddings_context = [context[0]]
-    embedding_out = gluon.nn.SparseEmbedding(num_tokens, args.emsize)
-    if args.normalized_initialization:
-        embedding_out.initialize(
-            mx.init.Uniform(scale=1 / args.emsize), ctx=embeddings_context)
-    else:
-        embedding_out.initialize(mx.init.Uniform(), ctx=embeddings_context)
-    if not args.dont_hybridize:
-        embedding_out.hybridize()
-
-    if not args.no_token_embedding:
-        embedding_in = gluon.nn.SparseEmbedding(num_tokens, args.emsize)
-        if args.normalized_initialization:
-            embedding_in.initialize(
-                mx.init.Uniform(scale=1 / args.emsize), ctx=embeddings_context)
-        else:
-            embedding_in.initialize(mx.init.Uniform(), ctx=embeddings_context)
-
-        if not args.dont_hybridize:
-            embedding_in.hybridize()
-    else:
-        embedding_in = None
-
-    if args.subword_network:
-        subword_net = subword.create(name=args.subword_network, args=args,
-                                     vocab_size=len(subword_vocab))
-        subword_net.initialize(mx.init.Xavier(), ctx=context)
-        embedding_net = subword.create(name=args.embedding_network, args=args)
-        embedding_net.initialize(mx.init.Orthogonal(), ctx=context)
-
-        if not args.dont_hybridize:
-            subword_net.hybridize()
-            embedding_net.hybridize()
-
-        if args.auxilary_task:
-            auxilary_task_net = subword.create(
-                name='WordPrediction', vocab_size=len(vocab), args=args)
-            auxilary_task_net.initialize(mx.init.Orthogonal(), ctx=context)
-            if not args.dont_hybridize:
-                auxilary_task_net
-        else:
-            auxilary_task_net = None
-
-    else:
-        subword_net = None
-        embedding_net = None
-
-    loss = gluon.loss.SigmoidBinaryCrossEntropyLoss()
-    aux_loss = gluon.loss.SoftmaxCrossEntropyLoss()
-
-    return (embedding_in, embedding_out, subword_net, embedding_net,
-            auxilary_task_net, loss, aux_loss)
 
 
 ###############################################################################
@@ -259,7 +198,7 @@ def compute_word_embeddings(args, embedding_in, subword_embeddings, source):
 def train(args):
     train_dataset, vocab, subword_vocab = data.get_train_data(args)
     (embedding_in, embedding_out, subword_net, embedding_net,
-     auxilary_task_net, loss_function, aux_loss_function) = get_model(
+     auxilary_task_net, loss_function, aux_loss_function) = model.get_model(
          args, train_dataset, vocab, subword_vocab)
     context = utils.get_context(args)
 

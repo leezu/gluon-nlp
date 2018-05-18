@@ -27,6 +27,7 @@ import tempfile
 import plot
 import data
 import gluonnlp as nlp
+import model
 import subword
 import trainer
 import utils
@@ -37,23 +38,6 @@ def get_args(parameter_adders=None):
     parser = argparse.ArgumentParser(
         description='Word embedding training with Gluon.',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-
-    # Model arguments
-    group = parser.add_argument_group('Model arguments')
-    group.add_argument('--no-token-embedding', action='store_true',
-                       help='Don\'t use any token embedding. '
-                       'Only use subword units.')
-    group.add_argument(
-        '--subword-network', type=str, default='', nargs='?',
-        help='Network architecture to encode subword level information. ' +
-        str(subword.list_subwordnetworks()))
-    group.add_argument('--objective', type=str, default='skipgram',
-                       help='Word embedding training objective.')
-    group.add_argument('--emsize', type=int, default=300,
-                       help='Size of word embeddings')
-    group.add_argument(
-        '--normalized-initialization', action='store_true',
-        help='Normalize uniform initialization range by embedding size.')
 
     # Evaluation arguments
     group = parser.add_argument_group('Evaluation arguments')
@@ -92,7 +76,6 @@ def get_args(parameter_adders=None):
     group.add_argument('--num-data-workers', type=int, default=5,
                        help='Number of threads to preload data.')
 
-
     # Logging options
     group = parser.add_argument_group('Logging arguments')
     group.add_argument('--logdir', type=str, default=None,
@@ -110,6 +93,7 @@ def get_args(parameter_adders=None):
     data.add_parameters(parser)
     plot.add_parameters(parser)
     trainer.add_parameters(parser)
+    model.add_parameters(parser)
 
     if parameter_adders is not None:
         for f in parameter_adders:
