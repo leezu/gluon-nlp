@@ -197,14 +197,15 @@ def train(args):
         args, embedding_out.collect_params())
     if embedding_in is not None:
         embedding_in_trainer = trainer.get_embedding_in_trainer(
-            args, embedding_in.collect_params())
+            args, embedding_in.collect_params(), len(vocab))
     if subword_net is not None:
         subword_params = list(subword_net.collect_params().values())
         if embedding_net is not None:
             subword_params += list(embedding_net.collect_params().values())
         if auxilary_task_net is not None:
             subword_params += list(auxilary_task_net.collect_params().values())
-        subword_trainer = trainer.get_subword_trainer(args, subword_params)
+        subword_trainer = trainer.get_subword_trainer(args, subword_params,
+                                                      len(subword_vocab))
 
     # Logging writer
     sw = SummaryWriter(logdir=args.logdir)

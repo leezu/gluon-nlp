@@ -39,7 +39,10 @@ def add_parameters(parser):
     group.add_argument('--word-optimizer', type=str, default='proximalsgd')
     group.add_argument('--word-lr', type=float, default=0.1,
                        help='Learning rate for embeddings matrix.')
-    group.add_argument('--word-l2', type=float, default=0.00001)
+    group.add_argument(
+        '--word-l2', type=float, default=1,
+        help='Group sparsity regularization scale. '
+        'Parameter is used as multiplier of the inverse vocabulary size.')
 
     group = parser.add_argument_group(
         'Dense subword network optimization arguments')
@@ -60,14 +63,17 @@ def add_parameters(parser):
                        help='Optimizer used to train subword network.')
     group.add_argument('--subword-sparse-lr', type=float, default=0.01,
                        help='Learning rate for subword embedding network.')
-    group.add_argument('--subword-sparse-l2', type=float, default=0.00001,
-                       help='Learning rate for subword embedding network.')
+    group.add_argument('--subword-sparse-l2', type=float, default=1,
+                       help='Group sparsity regularization scale. '
+                       'Parameter is used as multiplier of the '
+                       'inverse subword vocabulary size.')
 
 
-def get_embedding_in_trainer(args, params):
+def get_embedding_in_trainer(args, params, num_words):
     if args.word_optimizer.lower() == 'proximalsgd':
         optimizer = mx.optimizer.Optimizer.create_optimizer(
-            args.word_optimizer, learning_rate=args.word_lr, l2=args.word_l2)
+            args.word_optimizer, learning_rate=args.word_lr,
+            l2=args.word_l2 * 1 / num_words)
     elif args.word_optimizer.lower() == 'sgd':
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.word_optimizer, learning_rate=args.word_lr)
@@ -83,19 +89,20 @@ def get_embedding_out_trainer(args, params):
     return gluon.Trainer(params, optimizer)
 
 
-def get_subword_trainer(args, params):
+def get_subword_trainer(args, params, num_subword_units):
     """Parase args depending on subwort network and return trainer."""
     if args.subword_network.lower() in ['sumreduce', 'fasttext']:
-        return _get_sparse_subword_trainer(args, params)
+        return _get_sparse_subword_trainer(args, params, num_subword_units)
     else:
         return _get_dense_subword_trainer(args, params)
 
 
-def _get_sparse_subword_trainer(args, params):
+def _get_sparse_subword_trainer(args, params, num_subword_units):
     if args.subword_sparse_optimizer.lower() == 'proximalsgd':
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.subword_sparse_optimizer,
-            learning_rate=args.subword_sparse_lr, l2=args.subword_sparse_l2)
+            learning_rate=args.subword_sparse_lr,
+            l2=args.subword_sparse_l2 * 1 / num_subword_units)
     elif args.subword_sparse_optimizer.lower() == 'sgd':
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.subword_sparse_optimizer,
