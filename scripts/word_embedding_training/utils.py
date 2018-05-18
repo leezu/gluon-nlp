@@ -17,17 +17,13 @@
 # specific language governing permissions and limitations
 # under the License.
 """Utility functions"""
-
 import logging
 import os
 import tempfile
 import time
 from contextlib import contextmanager
-import numpy as np
 
 import mxnet as mx
-
-import sparse_ops
 
 
 @contextmanager
@@ -46,56 +42,6 @@ def get_context(args):
     else:
         context = [mx.gpu(int(i)) for i in args.gpu]
     return context
-
-
-def update_embedding_block(args, embedding_block, unique_counts=None,
-                           unique_indices=None, grad_normalization=None,
-                           with_sparsity=False, last_update_buffer=None,
-                           current_update=None, lazy_update=True):
-    context = get_context(args)
-
-    param_data = embedding_block.weight.data(context[0])
-    param_grad = embedding_block.weight.grad(context[0])
-
-    if args.normalize_gradient.lower() == 'none':
-        norm = None
-    elif args.normalize_gradient.lower() == 'count':
-        assert grad_normalization is not None
-        norm = mx.nd.sparse.row_sparse_array((unique_counts.reshape(
-            (-1, 1)), unique_indices), ctx=context[0], dtype=np.float32)
-    elif args.normalize_gradient.lower() == 'l2':
-        norm = mx.nd.sparse.sqrt(
-            mx.nd._internal._square_sum(param_grad, axis=1, keepdims=True))
-    else:
-        raise NotImplementedError
-
-    if norm is not None:
-        if (hasattr(mx.nd.sparse, 'dense_division')
-                and not args.force_py_op_normalize_gradient):
-            mx.nd.sparse.dense_division(param_grad, norm, out=param_grad)
-        else:
-            param_grad = mx.nd.Custom(param_grad, norm,
-                                      op_type='dense_division')
-
-    if with_sparsity:
-        assert current_update is not None
-        assert param_data.shape[0] == last_update_buffer.shape[0]
-        if args.debug:
-            assert last_update_buffer.max().asscalar() < current_update
-
-        if param_grad is None:  # Helper to force eager update with grad
-            param_grad = mx.nd.sparse.row_sparse_array(param_data.shape,
-                                                       ctx=param_data.context)
-
-        mx.nd.sparse.proximal_sgd_update(
-            weight=param_data, grad=param_grad,
-            last_update_buffer=last_update_buffer, lr=args.embeddings_lr,
-            sparsity=args.sparsity_lambda, current_update=current_update,
-            out=param_data, lazy_update=lazy_update)
-    else:
-        mx.nd.sparse.sgd_update(weight=param_data, grad=param_grad,
-                                lr=args.embeddings_lr, out=param_data,
-                                lazy_update=lazy_update)
 
 
 def _get_tempfilename(directory):

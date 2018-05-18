@@ -24,7 +24,6 @@ This example shows how to train word embeddings.
 """
 
 import logging
-import sys
 
 import mxnet as mx
 import numpy as np
@@ -37,6 +36,7 @@ import data
 import evaluation
 import subword
 import utils
+import trainer
 
 
 ###############################################################################
@@ -50,16 +50,6 @@ def add_parameters(parser):
     group.add_argument('--subword-function', type=str, default='byte')
     group.add_argument('--auxilary-task', action='store_true',
                        help='Use auxilary word prediction task.')
-
-    group = parser.add_argument_group('Subword network optimization arguments')
-    group.add_argument('--dense-lr', type=float, default=0.01,
-                       help='Learning rate for subword embedding network.')
-    group.add_argument('--dense-wd', type=float, default=1.2e-6,
-                       help='Weight decay for subword embedding network.')
-    group.add_argument('--dense-optimizer', type=str, default='adagrad',
-                       help='Optimizer used to train subword network.')
-    group.add_argument('--dense-momentum', type=float, default=0.9,
-                       help='Momentum for dense-optimizer, if supported.')
 
 
 ###############################################################################
@@ -121,26 +111,6 @@ def get_model(args, train_dataset, vocab, subword_vocab):
 
     return (embedding_in, embedding_out, subword_net, embedding_net,
             auxilary_task_net, loss, aux_loss)
-
-
-###############################################################################
-# Training helpers
-###############################################################################
-def get_dense_trainer(args, dense_params):
-    if args.dense_optimizer.lower() == 'sgd':
-        return gluon.Trainer(
-            dense_params, args.dense_optimizer, {
-                'learning_rate': args.dense_lr,
-                'wd': args.dense_wd,
-                'momentum': args.dense_momentum
-            })
-    elif args.dense_optimizer.lower() in ['adam', 'adagrad']:
-        return gluon.Trainer(dense_params, args.dense_optimizer, {
-            'learning_rate': args.dense_lr,
-            'wd': args.dense_wd,
-        })
-    logging.error('Unsupported optimizer')
-    sys.exit(1)
 
 
 ###############################################################################
@@ -293,18 +263,18 @@ def train(args):
          args, train_dataset, vocab, subword_vocab)
     context = utils.get_context(args)
 
+    embedding_out_trainer = trainer.get_embedding_out_trainer(
+        args, embedding_out.collect_params())
+    if embedding_in is not None:
+        embedding_in_trainer = trainer.get_embedding_in_trainer(
+            args, embedding_in.collect_params())
     if subword_net is not None:
-        dense_params = (list(subword_net.collect_params().values()) +
-                        list(embedding_net.collect_params().values()))
+        subword_params = (list(subword_net.collect_params().values()) +
+                          list(embedding_net.collect_params().values()))
         if auxilary_task_net is not None:
-            dense_params = (dense_params +
-                            list(auxilary_task_net.collect_params().values()))
-        dense_trainer = get_dense_trainer(args, dense_params)
-
-    # Auxilary states for group lasso objective
-    last_update_buffer = mx.nd.zeros((train_dataset.num_tokens, ),
-                                     ctx=context[0])
-    current_update = 1
+            subword_params = (subword_params + list(
+                auxilary_task_net.collect_params().values()))
+        subword_trainer = trainer.get_subword_trainer(args, subword_params)
 
     # Logging writer
     sw = SummaryWriter(logdir=args.logdir)
@@ -389,31 +359,22 @@ def train(args):
 
             loss.backward()
 
-            # Training of dense params
+            # Update parameters
             if subword_net is not None:
-                dense_trainer.step(batch_size=args.batch_size)
-
-            # Training of word embedding matrix with group sparsity
+                subword_trainer.step(batch_size=subword_embeddings.shape[0])
             if embedding_in is not None:
                 # Force eager update before evaluation
-                lazy_update = False if i % args.eval_interval == 0 else True
-                utils.update_embedding_block(
-                    args,
-                    embedding_in,
-                    unique_sources_counts,
-                    unique_sources_indices_np,
-                    with_sparsity=True,
-                    last_update_buffer=last_update_buffer,
-                    current_update=current_update,
-                    lazy_update=lazy_update,
-                )
-
-            # Training of emb_out
-            utils.update_embedding_block(args, embedding_out,
-                                         unique_targets_counts,
-                                         unique_targets_indices)
-
-            current_update += 1
+                if i % args.eval_interval == 0:
+                    embedding_in_trainer.lazy_update = False
+                    trainer.normalize_sparse_grads(args, embedding_in,
+                                                   unique_sources_counts,
+                                                   unique_sources_indices_np)
+                embedding_in_trainer.step(batch_size=args.batch_size)
+                embedding_in_trainer.lazy_update = True
+            trainer.normalize_sparse_grads(args, embedding_out,
+                                           unique_targets_counts,
+                                           unique_targets_indices)
+            embedding_out_trainer.step(batch_size=args.batch_size)
 
             # Logging
             if i % args.eval_interval == 0:
@@ -421,53 +382,53 @@ def train(args):
                     mx.nd.waitall()
 
                 # Mxboard
-                # Histogram
+                num_update = embedding_out_trainer._optimizer.num_update
                 if embedding_in is not None:
                     embedding_in_norm = embedding_in.weight.data(
                         ctx=context[0]).as_in_context(
                             mx.cpu()).tostype("default").norm(axis=1)
                     sw.add_histogram(tag='embedding_in_norm',
                                      values=embedding_in_norm,
-                                     global_step=current_update, bins=200)
+                                     global_step=num_update, bins=200)
                     embedding_in_grad = embedding_in.weight.grad(
                         ctx=context[0]).as_in_context(
                             mx.cpu()).tostype("default").norm(axis=1)
                     sw.add_histogram(tag='embedding_in_grad',
                                      values=embedding_in_grad,
-                                     global_step=current_update, bins=200)
+                                     global_step=num_update, bins=200)
                 if subword_net is not None:
                     for k, v in subword_net.collect_params().items():
                         if v.grad_req == 'null':
                             continue
                         sw.add_histogram(tag=k, values=v.data(ctx=context[0]),
-                                         global_step=current_update, bins=200)
+                                         global_step=num_update, bins=200)
                         sw.add_histogram(tag='grad-' + str(k),
                                          values=v.grad(ctx=context[0]),
-                                         global_step=current_update, bins=200)
+                                         global_step=num_update, bins=200)
                     # Predicted word embeddings
                     sw.add_histogram(tag='subword_embedding_in_norm',
                                      values=subword_embeddings.norm(axis=1),
-                                     global_step=current_update, bins=200)
+                                     global_step=num_update, bins=200)
 
                 if embedding_net is not None:
                     for k, v in embedding_net.collect_params().items():
                         if v.grad_req == 'null':
                             continue
                         sw.add_histogram(tag=k, values=v.data(ctx=context[0]),
-                                         global_step=current_update, bins=200)
+                                         global_step=num_update, bins=200)
                         sw.add_histogram(tag='grad-' + str(k),
                                          values=v.grad(ctx=context[0]),
-                                         global_step=current_update, bins=200)
+                                         global_step=num_update, bins=200)
 
                 if auxilary_task_net is not None:
                     for k, v in auxilary_task_net.collect_params().items():
                         if v.grad_req == 'null':
                             continue
                         sw.add_histogram(tag=k, values=v.data(ctx=context[0]),
-                                         global_step=current_update, bins=200)
+                                         global_step=num_update, bins=200)
                         sw.add_histogram(tag='grad-' + str(k),
                                          values=v.grad(ctx=context[0]),
-                                         global_step=current_update, bins=200)
+                                         global_step=num_update, bins=200)
 
                 # Embedding out
                 embedding_out_norm = embedding_out.weight.data(
@@ -475,43 +436,43 @@ def train(args):
                         mx.cpu()).tostype("default").norm(axis=1)
                 sw.add_histogram(tag='embedding_out_norm',
                                  values=embedding_out_norm,
-                                 global_step=current_update, bins=200)
+                                 global_step=num_update, bins=200)
                 embedding_out_grad = embedding_out.weight.grad(
                     ctx=context[0]).as_in_context(
                         mx.cpu()).tostype("default").norm(axis=1)
                 sw.add_histogram(tag='embedding_out_grad',
                                  values=embedding_out_grad,
-                                 global_step=current_update, bins=200)
+                                 global_step=num_update, bins=200)
 
                 # Scalars
                 sw.add_scalar(tag='loss', value=loss.mean().asscalar(),
-                              global_step=current_update)
+                              global_step=num_update)
                 sw.add_scalar(tag='task_loss',
                               value=task_loss.mean().asscalar(),
-                              global_step=current_update)
+                              global_step=num_update)
                 if not isinstance(aux_loss, int):
                     sw.add_scalar(tag='aux_loss', value=aux_loss.asscalar(),
-                                  global_step=current_update)
+                                  global_step=num_update)
                 if not isinstance(aux_acc, int):
                     sw.add_scalar(tag='aux_acc', value=aux_acc.asscalar(),
-                                  global_step=current_update)
+                                  global_step=num_update)
                 if not isinstance(attention_regularization, int):
                     sw.add_scalar(tag='attention_regularization',
                                   value=attention_regularization.asscalar(),
-                                  global_step=current_update)
+                                  global_step=num_update)
 
                 eval_dict = evaluation.evaluate(args, embedding_in,
                                                 subword_net, embedding_net,
                                                 vocab, subword_vocab, sw)
                 for k, v in eval_dict.items():
                     sw.add_scalar(tag=k, value=float(v),
-                                  global_step=current_update)
+                                  global_step=num_update)
 
                 sw.flush()
 
                 # Save params after evaluation
                 utils.save_params(args, embedding_in, embedding_out,
-                                  subword_net, current_update)
+                                  subword_net, num_update)
 
     sw.close()
 

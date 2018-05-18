@@ -28,6 +28,7 @@ import plot
 import data
 import gluonnlp as nlp
 import subword
+import trainer
 import utils
 
 
@@ -44,9 +45,8 @@ def get_args(parameter_adders=None):
                        'Only use subword units.')
     group.add_argument(
         '--subword-network', type=str, default='', nargs='?',
-        help=('Network architecture to encode subword level information. ' +
-              str(subword.list_subwordnetworks()) +
-              ' , fasttext or empty to disable'))
+        help='Network architecture to encode subword level information. ' +
+        str(subword.list_subwordnetworks()))
     group.add_argument('--objective', type=str, default='skipgram',
                        help='Word embedding training objective.')
     group.add_argument('--emsize', type=int, default=300,
@@ -75,8 +75,6 @@ def get_args(parameter_adders=None):
     group = parser.add_argument_group('Computation arguments')
     group.add_argument('--batch-size', type=int, default=1024,
                        help='Batch size for training.')
-    group.add_argument('--sparsity-lambda', type=float, default=0.001,
-                       help='Initial learning rate')
     group.add_argument('--epochs', type=int, default=5, help='Epoch limit')
     group.add_argument('--gpu', type=int, nargs='+',
                        help=('Number (index) of GPU to run on, e.g. 0. '
@@ -94,10 +92,6 @@ def get_args(parameter_adders=None):
     group.add_argument('--num-data-workers', type=int, default=5,
                        help='Number of threads to preload data.')
 
-    # Optimization options
-    group = parser.add_argument_group('Optimization arguments')
-    group.add_argument('--embeddings-lr', type=float, default=0.1,
-                       help='Learning rate for embeddings matrix.')
 
     # Logging options
     group = parser.add_argument_group('Logging arguments')
@@ -115,6 +109,7 @@ def get_args(parameter_adders=None):
     subword.add_parameters(parser)
     data.add_parameters(parser)
     plot.add_parameters(parser)
+    trainer.add_parameters(parser)
 
     if parameter_adders is not None:
         for f in parameter_adders:
