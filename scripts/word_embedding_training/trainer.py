@@ -25,6 +25,7 @@ This example shows how to train word embeddings.
 
 import logging
 import sys
+import warnings
 
 import mxnet as mx
 import numpy as np
@@ -71,6 +72,10 @@ def add_parameters(parser):
 
 def get_embedding_in_trainer(args, params, num_words):
     if args.word_optimizer.lower() == 'proximalsgd':
+        if not args.subword_network.lower() and args.word_l2 != 0:
+            warnings.warn('Enabling sparsity regularization {} '
+                          'without having a subword net. '.format(
+                              args.word_l2))
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.word_optimizer, learning_rate=args.word_lr,
             l2=args.word_l2 * 1 / num_words)

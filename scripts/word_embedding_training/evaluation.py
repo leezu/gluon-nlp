@@ -24,7 +24,6 @@ This example shows how to train word embeddings.
 """
 
 import itertools
-import logging
 
 import mxnet as mx
 import numpy as np
