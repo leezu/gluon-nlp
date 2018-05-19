@@ -221,7 +221,7 @@ def train(args):
 
         for i, batch_idx in tqdm.tqdm(
                 enumerate(batches), total=len(batches), ascii=True,
-                smoothing=1):
+                smoothing=1, dynamic_ncols=True):
             if 'rnn' in args.subword_network.lower():
                 mx.nd.waitall()  # wait to avoid cudnn memory related crashes
 
