@@ -109,6 +109,10 @@ def construct_vocab_embedding_for_dataset(args, tokens, vocab, embedding_in,
 
             # 3. Compute
             if subword_net is not None:
+                if 'rnn' in args.subword_network.lower():
+                    # wait to avoid cudnn memory related crashes
+                    mx.nd.waitall()
+
                 encoded = subword_net(known_tokens_subword_indices_nd,
                                       known_tokens_subword_indices_mask_nd)
 
