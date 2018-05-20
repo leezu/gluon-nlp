@@ -135,7 +135,8 @@ def construct_vocab_embedding_for_dataset(args, tokens, vocab, embedding_in,
                     known_tokens_subword_indices_mask_nd.expand_dims(-1))
                 token_subword_embeddings = mx.nd.sum(masked_subword_embeddings,
                                                      axis=-2)
-            token_subword_embeddings_all.append(token_subword_embeddings)
+            token_subword_embeddings_all.append(
+                token_subword_embeddings.as_in_context(mx.cpu()))
         token_subword_embeddings = mx.nd.concat(*token_subword_embeddings_all,
                                                 dim=0)
 
@@ -168,8 +169,9 @@ def construct_vocab_embedding_for_dataset(args, tokens, vocab, embedding_in,
             known_token_idx_mask_nd = mx.nd.array(token_mask, ctx=context[0]) \
                                            .expand_dims(-1)
             unmasked_token_embeddings = embedding_in(known_token_idx_nd)
-            token_embeddings = mx.nd.broadcast_mul(unmasked_token_embeddings,
-                                                   known_token_idx_mask_nd)
+            token_embeddings = mx.nd.broadcast_mul(
+                unmasked_token_embeddings,
+                known_token_idx_mask_nd).as_in_context(mx.cpu())
         else:
             token_embeddings = None
     else:
@@ -234,14 +236,11 @@ def evaluate_similarity(args, vocab, subword_vocab, embedding_in, subword_net,
     words1, words2, scores = zip(*dataset_coded)
     evaluator = nlp.embedding.evaluation.WordEmbeddingSimilarity(
         idx_to_vec=idx_to_vec, similarity_function=similarity_function)
-    context = utils.get_context(args)
-    evaluator.initialize(ctx=context[0])
+    evaluator.initialize(ctx=mx.cpu())
     if not args.dont_hybridize:
         evaluator.hybridize()
 
-    pred_similarity = evaluator(
-        mx.nd.array(words1, ctx=context[0]), mx.nd.array(
-            words2, ctx=context[0]))
+    pred_similarity = evaluator(mx.nd.array(words1), mx.nd.array(words2))
 
     sr = stats.spearmanr(pred_similarity.asnumpy(), np.array(scores))
     return sr.correlation, share_dropped
