@@ -307,17 +307,23 @@ def train(args):
                 # Force eager update before evaluation
                 if i % args.eval_interval == 0:
                     embedding_in_trainer.lazy_update = False
+                if args.normalize_gradient.lower() in ['count', 'l2']:
                     trainer.normalize_sparse_grads(args, embedding_in,
                                                    unique_sources_counts,
                                                    unique_sources_indices_np)
-                embedding_in_trainer.step(
-                    batch_size=source.shape[0] * source.shape[1])
+                    embedding_in_trainer.step(batch_size=1)
+                else:
+                    embedding_in_trainer.step(
+                        batch_size=source.shape[0] * source.shape[1])
                 embedding_in_trainer.lazy_update = True
-            trainer.normalize_sparse_grads(args, embedding_out,
-                                           unique_targets_counts,
-                                           unique_targets_indices)
-            embedding_out_trainer.step(
-                batch_size=target.shape[0] * target.shape[1])
+            if args.normalize_gradient.lower() in ['count', 'l2']:
+                trainer.normalize_sparse_grads(args, embedding_out,
+                                               unique_targets_counts,
+                                               unique_targets_indices)
+                embedding_out_trainer.step(batch_size=1)
+            else:
+                embedding_out_trainer.step(
+                    batch_size=target.shape[0] * target.shape[1])
 
             # Logging
             if i % args.eval_interval == 0:
