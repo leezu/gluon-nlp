@@ -269,9 +269,10 @@ def evaluate_num_zero_rows(args, embedding_in, subword_net, vocab,
         assert len(subword_vocab) == subword_embedding_norm.shape[0]
 
         eval_dict = {
-            'zero_subword_vectors': num_zero_subword_vectors,
+            'zero_subword_vectors':
+            num_zero_subword_vectors,
             'nonzero_subword_vectors':
-            len(subword_vocab) - num_zero_word_vectors,
+            len(subword_vocab) - num_zero_subword_vectors,
             **eval_dict,
         }
 
