@@ -80,9 +80,9 @@ def get_args(parameter_adders=None):
                        help='Enable debug mode checks.')
 
     # Deprecated arguments
-    group.add_argument('--normalize-gradient', type=str, default='none',
+    group.add_argument('--normalize-gradient', type=str, default='batch_size',
                        help='Normalize the word embedding gradient row-wise. '
-                       'Supported are [None, count, L2].')
+                       'Supported are [batch_size, count, L2, none].')
     group.add_argument(
         '--force-py-op-normalize-gradient', action='store_true',
         help='Always use Python sparse L2 normalization operator.')

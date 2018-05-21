@@ -24,6 +24,7 @@ This example shows how to train word embeddings.
 """
 
 import logging
+import sys
 
 import mxnet as mx
 import numpy as np
@@ -321,9 +322,16 @@ def train(args):
                                                    unique_sources_counts,
                                                    unique_sources_indices_np)
                     embedding_in_trainer.step(batch_size=1)
-                else:
+                elif args.normalize_gradient.lower() == 'batch_size':
                     embedding_in_trainer.step(
                         batch_size=source.shape[0] * source.shape[1])
+                elif args.normalize_gradient.lower() == 'none':
+                    embedding_in_trainer.step(batch_size=1)
+                else:
+                    logging.error('--normalize-gradient {} is invalid'.format(
+                        args.normalize_gradient))
+                    sys.exit(1)
+
                 embedding_in_trainer.lazy_update = True
 
             embedding_out_trainer.set_learning_rate(args.word_l2 *
@@ -333,9 +341,15 @@ def train(args):
                                                unique_targets_counts,
                                                unique_targets_indices)
                 embedding_out_trainer.step(batch_size=1)
-            else:
+            elif args.normalize_gradient.lower() == 'batch_size':
                 embedding_out_trainer.step(
                     batch_size=target.shape[0] * target.shape[1])
+            elif args.normalize_gradient.lower() == 'none':
+                embedding_out_trainer.step(batch_size=1)
+            else:
+                logging.error('--normalize-gradient {} is invalid'.format(
+                    args.normalize_gradient))
+                sys.exit(1)
 
             # Logging
             if i % args.eval_interval == 0:
