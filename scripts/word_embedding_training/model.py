@@ -50,8 +50,11 @@ def add_parameters(parser):
     group.add_argument('--emsize', type=int, default=300,
                        help='Size of word embeddings')
     group.add_argument(
-        '--normalized-initialization', action='store_true',
+        '--no-normalized-initialization', action='store_true',
         help='Normalize uniform initialization range by embedding size.')
+    group.add_argument(
+        '--no-zero-embedding-out-initialization', action='store_true',
+        help='Don\'t initialize context embedding matrix as 0 as in fasttext.')
 
 
 def get_model(args, train_dataset, vocab, subword_vocab):
@@ -62,14 +65,18 @@ def get_model(args, train_dataset, vocab, subword_vocab):
     context = utils.get_context(args)
     embeddings_context = [context[0]]
 
-    if args.normalized_initialization:
+    if not args.no_normalized_initialization:
         embedding_initializer = mx.init.Uniform(scale=1 / args.emsize)
     else:
         embedding_initializer = mx.init.Uniform()
+    if not args.no_zero_embedding_out_initialization:
+        embedding_out_initializer = mx.init.Zero()
+    else:
+        embedding_out_initializer = embedding_initializer
 
     # Output embeddings
     embedding_out = gluon.nn.SparseEmbedding(
-        num_tokens, args.emsize, weight_initializer=embedding_initializer)
+        num_tokens, args.emsize, weight_initializer=embedding_out_initializer)
     embedding_out.initialize(ctx=embeddings_context)
     if not args.dont_hybridize:
         embedding_out.hybridize()
