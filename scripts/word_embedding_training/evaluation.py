@@ -251,7 +251,7 @@ def evaluate_num_zero_rows(args, embedding_in, subword_net, vocab,
     context = utils.get_context(args)
 
     token_idx_to_vec = embedding_in.weight.data(ctx=context[0]).as_in_context(
-        mx.cpu()).data
+        mx.cpu()).tostype('default')
     embedding_norm = mx.nd.norm(token_idx_to_vec, axis=1)
     num_zero_word_vectors = mx.nd.sum(embedding_norm < eps).asscalar()
     assert len(vocab) == embedding_norm.shape[0]
@@ -262,7 +262,7 @@ def evaluate_num_zero_rows(args, embedding_in, subword_net, vocab,
 
     if args.subword_network.lower() in ['sumreduce', 'fasttext']:
         subword_idx_to_vec = subword_net.embedding.weight.data(
-            ctx=context[0]).as_in_context(mx.cpu()).data
+            ctx=context[0]).as_in_context(mx.cpu()).tostype('default')
         subword_embedding_norm = mx.nd.norm(subword_idx_to_vec, axis=1)
         num_zero_subword_vectors = mx.nd.sum(
             subword_embedding_norm < eps).asscalar()
