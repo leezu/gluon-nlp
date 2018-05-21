@@ -64,6 +64,7 @@ def get_model(args):
 def load_and_evaluate(args):
     vocab, embedding_in = get_model(args)
     sw = SummaryWriter(logdir=args.logdir)
+    sw.add_text(tag='args', text=str(args), global_step=0)
     eval_dict = evaluation.evaluate(args, embedding_in, None, None, vocab,
                                     None, sw)
     for k, v in eval_dict.items():

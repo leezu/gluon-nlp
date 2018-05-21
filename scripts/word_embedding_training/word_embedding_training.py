@@ -209,6 +209,7 @@ def train(args):
 
     # Logging writer
     sw = SummaryWriter(logdir=args.logdir)
+    sw.add_text(tag='args', text=str(args), global_step=0)
 
     indices = np.arange(len(train_dataset))
     for epoch in range(args.epochs):
