@@ -319,7 +319,7 @@ def _mask_2d(array, keep_max_size, min_size):
     count_nonmasked = 0
     for i in numba.prange(array.shape[0]):
         length = np.argmax(array[i] == -1)
-        if length == 0:  # If -1 is not present
+        if length == 0 and array[i][0] != -1:  # If -1 is not present
             length = array.shape[-1]
         token_length[i] = length
         array[i, length:] = 0
