@@ -225,6 +225,8 @@ def train(args):
             if 'rnn' in args.subword_network.lower():
                 mx.nd.waitall()  # wait to avoid cudnn memory related crashes
 
+            progress = (epoch * len(batches) + i) / (
+                args.epochs * len(batches))
             batch = train_dataset[batch_idx]
             (source, target, label, unique_sources_indices_np,
              unique_sources_counts, unique_sources_subwordsequences,
@@ -297,13 +299,19 @@ def train(args):
             # Update parameters
             if subword_net is not None:
                 if args.subword_network.lower() in ['fasttext', 'sumreduce']:
+                    subword_trainer.set_learning_rate(args.subword_sparse_l2 *
+                                                      (1 - progress))
                     subword_trainer.step(
                         batch_size=
                         unique_sources_subwordsequences_count_nonmasked)
                 else:
+                    subword_trainer.set_learning_rate(args.subword_dense_l2 *
+                                                      (1 - progress))
                     subword_trainer.step(
                         batch_size=num_unique_subwordsequences)
             if embedding_in is not None:
+                embedding_in_trainer.set_learning_rate(args.word_l2 *
+                                                       (1 - progress))
                 # Force eager update before evaluation
                 if i % args.eval_interval == 0:
                     embedding_in_trainer.lazy_update = False
@@ -316,6 +324,9 @@ def train(args):
                     embedding_in_trainer.step(
                         batch_size=source.shape[0] * source.shape[1])
                 embedding_in_trainer.lazy_update = True
+
+            embedding_out_trainer.set_learning_rate(args.word_l2 *
+                                                    (1 - progress))
             if args.normalize_gradient.lower() in ['count', 'l2']:
                 trainer.normalize_sparse_grads(args, embedding_out,
                                                unique_targets_counts,
@@ -345,6 +356,10 @@ def train(args):
                     sw.add_histogram(tag='embedding_in_grad',
                                      values=embedding_in_grad,
                                      global_step=num_update, bins=200)
+                    # Learning rate
+                    sw.add_scalar(tag='embedding_in_lr',
+                                  value=embedding_in_trainer.learning_rate,
+                                  global_step=num_update)
                 if subword_net is not None:
                     for k, v in subword_net.collect_params().items():
                         if v.grad_req == 'null':
@@ -358,6 +373,10 @@ def train(args):
                     sw.add_histogram(tag='subword_embedding_in_norm',
                                      values=subword_embeddings.norm(axis=1),
                                      global_step=num_update, bins=200)
+                    # Learning rate
+                    sw.add_scalar(tag='subword_net_lr',
+                                  value=subword_trainer.learning_rate,
+                                  global_step=num_update)
 
                 if embedding_net is not None:
                     for k, v in embedding_net.collect_params().items():
@@ -392,6 +411,10 @@ def train(args):
                 sw.add_histogram(tag='embedding_out_grad',
                                  values=embedding_out_grad,
                                  global_step=num_update, bins=200)
+                # Learning rate
+                sw.add_scalar(tag='embedding_out_lr',
+                              value=embedding_out_trainer.learning_rate,
+                              global_step=num_update)
 
                 # Scalars
                 sw.add_scalar(tag='loss', value=loss.mean().asscalar(),

@@ -40,6 +40,8 @@ def add_parameters(parser):
     group.add_argument('--word-optimizer', type=str, default='proximalsgd')
     group.add_argument('--word-lr', type=float, default=0.1,
                        help='Learning rate for embeddings matrix.')
+    group.add_argument('--word-lr-schedule', type=str, default='linear',
+                       help='Learning rate schedule.')
     group.add_argument(
         '--word-l2', type=float, default=1,
         help='Group sparsity regularization scale. '
@@ -52,6 +54,8 @@ def add_parameters(parser):
                        help='Optimizer used to train subword network.')
     group.add_argument('--subword-dense-lr', type=float, default=0.01,
                        help='Learning rate for subword embedding network.')
+    group.add_argument('--subword-dense-lr-schedule', type=str,
+                       default='linear', help='Learning rate schedule.')
     group.add_argument('--subword-dense-wd', type=float, default=1.2e-6,
                        help='Weight decay for subword embedding network.')
     group.add_argument('--subword-dense-momentum', type=float, default=0.9,
@@ -64,6 +68,8 @@ def add_parameters(parser):
                        help='Optimizer used to train subword network.')
     group.add_argument('--subword-sparse-lr', type=float, default=0.1,
                        help='Learning rate for subword embedding network.')
+    group.add_argument('--subword-sparse-lr-schedule', type=str,
+                       default='linear', help='Learning rate schedule.')
     group.add_argument('--subword-sparse-l2', type=float, default=1,
                        help='Group sparsity regularization scale. '
                        'Parameter is used as multiplier of the '
@@ -80,8 +86,7 @@ def get_embedding_in_trainer(args, params, num_words):
         logging.info('Setting l2 sparsity factor for words '
                      'to {}'.format(l2))
         optimizer = mx.optimizer.Optimizer.create_optimizer(
-            args.word_optimizer, learning_rate=args.word_lr,
-            l2=l2)
+            args.word_optimizer, learning_rate=args.word_lr, l2=l2)
     elif args.word_optimizer.lower() == 'sgd':
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.word_optimizer, learning_rate=args.word_lr)
