@@ -43,6 +43,7 @@ def get_args(parameter_adders=None):
     group = parser.add_argument_group('Evaluation arguments')
     group.add_argument('--eval-interval', type=int, default=100,
                        help='evaluation interval')
+
     ## Datasets
     group.add_argument(
         '--similarity-datasets', type=str,
