@@ -135,6 +135,9 @@ def setup_logging(args):
     elif os.path.isfile(args.logdir):
         raise RuntimeError('{} is a file.'.format(args.logdir))
 
+    with open(os.path.join(args.logdir, 'args'), 'w') as f:
+        print(args, file=f)
+
     logging.info('Logging to {}'.format(args.logdir))
 
 

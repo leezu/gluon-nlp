@@ -62,7 +62,7 @@ def add_parameters(parser):
     group.add_argument('--subword-sparse-optimizer', type=str,
                        default='proximalsgd',
                        help='Optimizer used to train subword network.')
-    group.add_argument('--subword-sparse-lr', type=float, default=0.01,
+    group.add_argument('--subword-sparse-lr', type=float, default=0.1,
                        help='Learning rate for subword embedding network.')
     group.add_argument('--subword-sparse-l2', type=float, default=1,
                        help='Group sparsity regularization scale. '
@@ -76,9 +76,12 @@ def get_embedding_in_trainer(args, params, num_words):
             warnings.warn('Enabling sparsity regularization {} '
                           'without having a subword net. '.format(
                               args.word_l2))
+        l2 = args.word_l2 * 1 / num_words
+        logging.info('Setting l2 sparsity factor for words '
+                     'to {}'.format(l2))
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.word_optimizer, learning_rate=args.word_lr,
-            l2=args.word_l2 * 1 / num_words)
+            l2=l2)
     elif args.word_optimizer.lower() == 'sgd':
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.word_optimizer, learning_rate=args.word_lr)
@@ -104,10 +107,12 @@ def get_subword_trainer(args, params, num_subword_units):
 
 def _get_sparse_subword_trainer(args, params, num_subword_units):
     if args.subword_sparse_optimizer.lower() == 'proximalsgd':
+        l2 = args.subword_sparse_l2 * 1 / num_subword_units
+        logging.info('Setting l2 sparsity factor for subwords '
+                     'to {}'.format(l2))
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.subword_sparse_optimizer,
-            learning_rate=args.subword_sparse_lr,
-            l2=args.subword_sparse_l2 * 1 / num_subword_units)
+            learning_rate=args.subword_sparse_lr, l2=l2)
     elif args.subword_sparse_optimizer.lower() == 'sgd':
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.subword_sparse_optimizer,
