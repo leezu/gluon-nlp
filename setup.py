@@ -64,6 +64,7 @@ setup(
             'tqdm',
             'pandas',
             'numba',
+            'seaborn',
         ],
         'dev': [
             'pytest',
