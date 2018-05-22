@@ -133,7 +133,7 @@ class Text8(_Hutter):
 class Wikipedia(CorpusDataset):
     num_files = 100  # By convention we split the corpus to 100 files
     _s3_bucket = 'lllausen-data'
-    _s3_key = 'datasets/wikimedia/{}/wiki.{}/{}'
+    _s3_key = 'datasets/wikimedia/{}/wiki.{}/{:02d}'
 
     def __init__(self, date, language, root=os.path.join(
             _get_home_dir(), 'datasets', 'wikimedia'), i=None):
@@ -150,6 +150,7 @@ class Wikipedia(CorpusDataset):
         folder_name = 'wiki.{}'.format(self.language)
         data_file_name = format(self.i, '02d')
         root = self._root
+        os.makedirs(os.path.join(root, folder_name), exist_ok=True)
         path = os.path.join(root, folder_name, data_file_name)
 
         # TODO(leezu): Publish the file hash together with the dataset on S3 and check
