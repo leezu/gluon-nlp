@@ -234,6 +234,8 @@ def train(args):
              unique_sources_counts, unique_sources_subwordsequences,
              source_subword, unique_sources_subwordsequences_mask,
              unique_sources_subwordsequences_count_nonmasked,
+             unique_sources_unique_subwordsequences_indices,
+             unique_sources_unique_subwordsequences_counts,
              unique_targets_indices, unique_targets_counts) = batch
 
             unique_sources_subwordsequences_last_valid = \
@@ -303,14 +305,34 @@ def train(args):
                 if args.subword_network.lower() in ['fasttext', 'sumreduce']:
                     subword_trainer.set_learning_rate(args.subword_sparse_l2 *
                                                       (1 - progress))
-                    subword_trainer.step(
-                        batch_size=
-                        unique_sources_subwordsequences_count_nonmasked)
                 else:
                     subword_trainer.set_learning_rate(args.subword_dense_l2 *
                                                       (1 - progress))
-                    subword_trainer.step(
-                        batch_size=num_unique_subwordsequences)
+                if args.normalize_gradient.lower() in ['count', 'l2']:
+                    assert args.subword_network.lower() in \
+                        ['fasttext', 'sumreduce'], 'Normalizing dense grad ' \
+                        ' by count or L2 is not supported.'
+
+                    trainer.normalize_sparse_grads(
+                        args, subword_net.embedding,
+                        unique_sources_unique_subwordsequences_counts,
+                        unique_sources_unique_subwordsequences_indices)
+                elif args.normalize_gradient.lower() == 'batch_size':
+                    if args.subword_network.lower() in \
+                             ['fasttext', 'sumreduce']:
+                        subword_trainer.step(
+                            batch_size=
+                            unique_sources_subwordsequences_count_nonmasked)
+                    else:
+                        subword_trainer.step(
+                            batch_size=num_unique_subwordsequences)
+                elif args.normalize_gradient.lower() == 'none':
+                    subword_trainer.step(batch_size=1)
+                else:
+                    logging.error('--normalize-gradient {} is invalid'.format(
+                        args.normalize_gradient))
+                    sys.exit(1)
+
             if embedding_in is not None:
                 embedding_in_trainer.set_learning_rate(args.word_l2 *
                                                        (1 - progress))

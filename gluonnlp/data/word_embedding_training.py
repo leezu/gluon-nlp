@@ -251,6 +251,8 @@ class SkipGramWordEmbeddingDataset(_WordEmbeddingDataset):
         (source, target, label, unique_sources_indices, unique_sources_counts,
          unique_sources_subwordsequences, unique_sources_subwordsequences_mask,
          unique_sources_subwordsequences_count_nonmasked,
+         unique_sources_unique_subwordsequences_indices,
+         unique_sources_unique_subwordsequences_counts,
          unique_targets_indices, unique_targets_counts) = _build_sg_batch(
              self.coded, idx, self.window, self.negative,
              self._smoothed_token_freq_cumsum, self._sentence_boundaries,
@@ -263,12 +265,16 @@ class SkipGramWordEmbeddingDataset(_WordEmbeddingDataset):
                     unique_sources_counts, unique_sources_subwordsequences,
                     source_subword[0], unique_sources_subwordsequences_mask,
                     unique_sources_subwordsequences_count_nonmasked,
+                    unique_sources_unique_subwordsequences_indices,
+                    unique_sources_unique_subwordsequences_counts,
                     unique_targets_indices, unique_targets_counts)
         else:
             return (source, target, label, unique_sources_indices,
                     unique_sources_counts, unique_sources_subwordsequences,
                     source_subword, unique_sources_subwordsequences_mask,
                     unique_sources_subwordsequences_count_nonmasked,
+                    unique_sources_unique_subwordsequences_indices,
+                    unique_sources_unique_subwordsequences_counts,
                     unique_targets_indices, unique_targets_counts)
 
 
@@ -298,16 +304,29 @@ def _build_sg_batch(coded, idxs, window, negative, token_freq_cumsum,
     unique_sources_indices, unique_sources_counts = np_unique_wcounts(sources)
     unique_sources_subwordsequences = idx_to_subwordidxs[
         unique_sources_indices.astype(np.int32)]
+
+    # Perform counts before -1 padding entries are replaced by 0
+    (unique_sources_unique_subwordsequences_indices,
+     unique_sources_unique_subwordsequences_counts
+     ) = np_unique_wcounts(unique_sources_subwordsequences)
+    # Ignore the padding index (-1) in the returned indices and counts
+    unique_sources_unique_subwordsequences_indices = \
+        unique_sources_unique_subwordsequences_indices[1:]
+    unique_sources_unique_subwordsequences_counts = \
+        unique_sources_unique_subwordsequences_counts[1:]
+
+    # Mask subwordsequences
     (unique_sources_subwordsequences, unique_sources_subwordsequences_mask,
      unique_sources_subwordsequences_count_nonmasked) = _mask_2d(
          unique_sources_subwordsequences, keep_max_size, min_size)
-
     unique_targets_indices, unique_targets_counts = np_unique_wcounts(targets)
 
     return (sources, targets, labels, unique_sources_indices,
             unique_sources_counts, unique_sources_subwordsequences,
             unique_sources_subwordsequences_mask,
             unique_sources_subwordsequences_count_nonmasked,
+            unique_sources_unique_subwordsequences_indices,
+            unique_sources_unique_subwordsequences_counts,
             unique_targets_indices, unique_targets_counts)
 
 
