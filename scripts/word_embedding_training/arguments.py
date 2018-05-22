@@ -41,7 +41,7 @@ def get_args(parameter_adders=None):
 
     # Evaluation arguments
     group = parser.add_argument_group('Evaluation arguments')
-    group.add_argument('--eval-interval', type=int, default=100,
+    group.add_argument('--eval-interval', type=int, default=1000,
                        help='evaluation interval')
 
     ## Datasets
@@ -80,7 +80,10 @@ def get_args(parameter_adders=None):
                        help='Enable debug mode checks.')
 
     # Deprecated arguments
-    group.add_argument('--normalize-gradient', type=str, default='batch_size',
+    group.add_argument('--normalize-loss', type=str, default='log_count',
+                       help='Normalize the word embedding task loss. '
+                       'Supported are [log_count, count, mean, none].')
+    group.add_argument('--normalize-gradient', type=str, default='none',
                        help='Normalize the word embedding gradient row-wise. '
                        'Supported are [batch_size, count, L2, none].')
     group.add_argument(

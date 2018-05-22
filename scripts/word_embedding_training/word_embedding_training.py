@@ -157,7 +157,7 @@ def log(args, sw, embedding_in, embedding_out, subword_net, embedding_net,
     # Scalars
     sw.add_scalar(tag='loss', value=loss.mean().asscalar(),
                   global_step=num_update)
-    sw.add_scalar(tag='task_loss', value=task_loss.mean().asscalar(),
+    sw.add_scalar(tag='task_loss', value=task_loss.asscalar(),
                   global_step=num_update)
     if not isinstance(aux_loss, int):
         sw.add_scalar(tag='aux_loss', value=aux_loss.asscalar(),
@@ -370,7 +370,7 @@ def train(args):
             progress = (epoch * len(batches) + i) / (
                 args.epochs * len(batches))
             batch = train_dataset[batch_idx]
-            (source, target, label, unique_sources_indices_np,
+            (source_np, target, label, unique_sources_indices_np,
              unique_sources_counts, unique_sources_subwordsequences,
              source_subword, unique_sources_subwordsequences_mask,
              unique_sources_subwordsequences_count_nonmasked,
@@ -385,7 +385,7 @@ def train(args):
                 -1] = unique_sources_subwordsequences_mask.shape[1] - 1
 
             # Load data for training embedding matrix to context[0]
-            source = mx.nd.array(source, ctx=context[0])
+            source = mx.nd.array(source_np, ctx=context[0])
             target = mx.nd.array(target, ctx=context[0])
             label = mx.nd.array(label, ctx=context[0])
 
@@ -397,7 +397,7 @@ def train(args):
                 unique_sources_subwordsequences_mask.shape
             num_unique_subwordsequences = \
                 unique_sources_subwordsequences.shape[0]
-            unique_sources_indices = gluon.utils.split_and_load(
+            unique_sources_indices_split = gluon.utils.split_and_load(
                 unique_sources_indices_np, context, even_split=False)
             unique_sources_subwordsequences = gluon.utils.split_and_load(
                 unique_sources_subwordsequences, context, even_split=False)
@@ -416,7 +416,7 @@ def train(args):
                      attention_regularization) = compute_subword_embeddings(
                          args, subword_net, embedding_net, auxilary_task_net,
                          aux_loss_function, source_subword,
-                         unique_sources_indices,
+                         unique_sources_indices_split,
                          unique_sources_subwordsequences,
                          unique_sources_subwordsequences_mask,
                          unique_sources_subwordsequences_last_valid)
@@ -436,7 +436,27 @@ def train(args):
                 # Compute loss
                 pred = mx.nd.batch_dot(emb_in, emb_out.swapaxes(1, 2))
                 task_loss = loss_function(pred, label)
-                loss = mx.nd.sum(task_loss) + aux_loss + \
+
+                # Normalize task loss
+                if args.normalize_loss in ['log_count', 'count']:
+                    _, source_count_inverse, source_count = np.unique(
+                        source_np, return_counts=True, return_inverse=True)
+                    if args.normalize_loss == 'log_count':
+                        source_count = np.log(source_count) + 1
+                    task_loss_normalization = 1 / mx.nd.array(
+                        source_count[source_count_inverse], ctx=context[0])
+                    normalized_task_loss = mx.nd.dot(task_loss_normalization,
+                                                     task_loss)
+                elif args.normalize_loss == 'mean':
+                    normalized_task_loss = mx.nd.mean(task_loss)
+                elif args.normalize_loss == 'none':
+                    normalized_task_loss = mx.nd.sum(task_loss)
+                else:
+                    logging.error('--normalize-loss {} is invalid'.format(
+                        args.normalize_loss))
+                    sys.exit(1)
+
+                loss =  normalized_task_loss + aux_loss + \
                     attention_regularization
 
             loss.backward()
@@ -520,11 +540,11 @@ def train(args):
                     mx.nd.waitall()
 
                 log(args, sw, embedding_in, embedding_out, subword_net,
-                    embedding_net, auxilary_task_net, loss, task_loss,
-                    aux_loss, aux_acc, attention_regularization,
-                    subword_embeddings, embedding_in_trainer,
-                    embedding_out_trainer, subword_trainer, vocab,
-                    subword_vocab)
+                    embedding_net, auxilary_task_net, loss,
+                    normalized_task_loss, aux_loss, aux_acc,
+                    attention_regularization, subword_embeddings,
+                    embedding_in_trainer, embedding_out_trainer,
+                    subword_trainer, vocab, subword_vocab)
 
                 # Save params after evaluation
                 num_update = embedding_out_trainer._optimizer.num_update
