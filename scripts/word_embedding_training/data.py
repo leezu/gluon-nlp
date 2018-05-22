@@ -50,6 +50,8 @@ def add_parameters(parser):
     group.add_argument('--train-dataset', type=str, default='Text8',
                        help='Training corpus. '
                        '[\'Text8\', \'Test\', \'Wikipedia\']')
+    group.add_argument('--fixed-subwordsequence-length', action='store_true',
+                       help='Use a constant (maximum) subwordsequence length.')
 
     # Text8 arguments
 
@@ -295,7 +297,8 @@ def _get_train_dataset(args, vocab, coded, sentence_boundaries=None):
             dataset = nlp.data.SkipGramWordEmbeddingDataset(
                 coded=coded, idx_to_counts=idx_to_counts,
                 subword_vocab=subword_vocab, min_size=min_size,
-                sentence_boundaries=sentence_boundaries)
+                sentence_boundaries=sentence_boundaries,
+                keep_max_size=args.fixed_subwordsequence_length)
 
         # TODO: Enable SkipGramWordEmbeddingDataset without subword_vocab
         # As a workaround, set subword_vocab to None here
