@@ -90,6 +90,9 @@ def get_embedding_in_trainer(args, params, num_words):
     elif args.word_optimizer.lower() == 'sgd':
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.word_optimizer, learning_rate=args.word_lr)
+    elif args.word_optimizer.lower() == 'adagrad':
+        optimizer = mx.optimizer.Optimizer.create_optimizer(
+            args.word_optimizer, learning_rate=args.word_lr)
     else:
         logging.error('Unsupported optimizer')
         sys.exit(1)
@@ -97,8 +100,16 @@ def get_embedding_in_trainer(args, params, num_words):
 
 
 def get_embedding_out_trainer(args, params):
-    optimizer = mx.optimizer.Optimizer.create_optimizer(
-        'sgd', learning_rate=args.word_lr)
+    if args.word_optimizer.lower() in ['proximalsgd', 'sgd']:
+        # Ignore group sparsity for context matrix
+        optimizer = mx.optimizer.Optimizer.create_optimizer(
+            'sgd', learning_rate=args.word_lr)
+    elif args.word_optimizer.lower() in ['adagrad']:
+        optimizer = mx.optimizer.Optimizer.create_optimizer(
+            'adagrad', learning_rate=args.word_lr)
+    else:
+        logging.error('Unsupported optimizer')
+        sys.exit(1)
     return gluon.Trainer(params, optimizer)
 
 
@@ -122,6 +133,9 @@ def _get_sparse_subword_trainer(args, params, num_subword_units):
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.subword_sparse_optimizer,
             learning_rate=args.subword_sparse_lr)
+    elif args.word_optimizer.lower() in ['adagrad']:
+        optimizer = mx.optimizer.Optimizer.create_optimizer(
+            'adagrad', learning_rate=args.subword_sparse_lr)
     else:
         logging.error('Unsupported optimizer')
         sys.exit(1)
