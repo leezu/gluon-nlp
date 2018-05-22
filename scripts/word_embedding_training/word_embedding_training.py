@@ -295,8 +295,9 @@ def train(args):
 
                 # Compute loss
                 pred = mx.nd.batch_dot(emb_in, emb_out.swapaxes(1, 2))
-                task_loss = mx.nd.sum(loss_function(pred, label))
-                loss = task_loss + aux_loss + attention_regularization
+                task_loss = loss_function(pred, label)
+                loss = mx.nd.sum(task_loss) + aux_loss + \
+                    attention_regularization
 
             loss.backward()
 
