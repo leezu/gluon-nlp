@@ -43,6 +43,109 @@ import trainer
 ###############################################################################
 # Training code
 ###############################################################################
+def log(args, sw, embedding_in, embedding_out, subword_net, embedding_net,
+        auxilary_task_net, loss, task_loss, aux_loss, aux_acc,
+        attention_regularization, subword_embeddings, embedding_in_trainer,
+        embedding_out_trainer, subword_trainer, vocab, subword_vocab):
+    context = utils.get_context(args)
+    # Mxboard
+    num_update = embedding_out_trainer._optimizer.num_update
+    if embedding_in is not None:
+        embedding_in_norm = embedding_in.weight.data(
+            ctx=context[0]).as_in_context(
+                mx.cpu()).tostype("default").norm(axis=1)
+        sw.add_histogram(tag='embedding_in_norm', values=embedding_in_norm,
+                         global_step=num_update, bins=200)
+        embedding_in_grad = embedding_in.weight.grad(
+            ctx=context[0]).as_in_context(
+                mx.cpu()).tostype("default").norm(axis=1)
+        sw.add_histogram(tag='embedding_in_grad', values=embedding_in_grad,
+                         global_step=num_update, bins=200)
+        # Learning rate
+        sw.add_scalar(tag='embedding_in_lr',
+                      value=embedding_in_trainer.learning_rate,
+                      global_step=num_update)
+    if subword_net is not None:
+        for k, v in subword_net.collect_params().items():
+            if v.grad_req == 'null':
+                continue
+            sw.add_histogram(tag=k, values=v.data(ctx=context[0]),
+                             global_step=num_update, bins=200)
+            sw.add_histogram(tag='grad-' + str(k),
+                             values=v.grad(ctx=context[0]),
+                             global_step=num_update, bins=200)
+        # Predicted word embeddings
+        sw.add_histogram(tag='subword_embedding_in_norm',
+                         values=subword_embeddings.norm(axis=1),
+                         global_step=num_update, bins=200)
+        # Learning rate
+        sw.add_scalar(tag='subword_net_lr',
+                      value=subword_trainer.learning_rate,
+                      global_step=num_update)
+
+    if embedding_net is not None:
+        for k, v in embedding_net.collect_params().items():
+            if v.grad_req == 'null':
+                continue
+            sw.add_histogram(tag=k, values=v.data(ctx=context[0]),
+                             global_step=num_update, bins=200)
+            sw.add_histogram(tag='grad-' + str(k),
+                             values=v.grad(ctx=context[0]),
+                             global_step=num_update, bins=200)
+
+    if auxilary_task_net is not None:
+        for k, v in auxilary_task_net.collect_params().items():
+            if v.grad_req == 'null':
+                continue
+            sw.add_histogram(tag=k, values=v.data(ctx=context[0]),
+                             global_step=num_update, bins=200)
+            sw.add_histogram(tag='grad-' + str(k),
+                             values=v.grad(ctx=context[0]),
+                             global_step=num_update, bins=200)
+
+    # Embedding out
+    embedding_out_norm = embedding_out.weight.data(
+        ctx=context[0]).as_in_context(
+            mx.cpu()).tostype("default").norm(axis=1)
+    sw.add_histogram(tag='embedding_out_norm', values=embedding_out_norm,
+                     global_step=num_update, bins=200)
+    embedding_out_grad = embedding_out.weight.grad(
+        ctx=context[0]).as_in_context(
+            mx.cpu()).tostype("default").norm(axis=1)
+    sw.add_histogram(tag='embedding_out_grad', values=embedding_out_grad,
+                     global_step=num_update, bins=200)
+    # Learning rate
+    sw.add_scalar(tag='embedding_out_lr',
+                  value=embedding_out_trainer.learning_rate,
+                  global_step=num_update)
+
+    # Scalars
+    sw.add_scalar(tag='loss', value=loss.mean().asscalar(),
+                  global_step=num_update)
+    sw.add_scalar(tag='task_loss', value=task_loss.mean().asscalar(),
+                  global_step=num_update)
+    if not isinstance(aux_loss, int):
+        sw.add_scalar(tag='aux_loss', value=aux_loss.asscalar(),
+                      global_step=num_update)
+    if not isinstance(aux_acc, int):
+        sw.add_scalar(tag='aux_acc', value=aux_acc.asscalar(),
+                      global_step=num_update)
+    if not isinstance(attention_regularization, int):
+        sw.add_scalar(tag='attention_regularization',
+                      value=attention_regularization.asscalar(),
+                      global_step=num_update)
+
+    eval_dict = evaluation.evaluate(args, embedding_in, subword_net,
+                                    embedding_net, vocab, subword_vocab, sw)
+    for k, v in eval_dict.items():
+        sw.add_scalar(tag=k, value=float(v), global_step=num_update)
+
+    sw.flush()
+
+
+###############################################################################
+# Training code
+###############################################################################
 def compute_subword_embeddings(args, *posargs, **kwargs):
     context = utils.get_context(args)
 
@@ -196,6 +299,8 @@ def train(args):
 
     embedding_out_trainer = trainer.get_embedding_out_trainer(
         args, embedding_out.collect_params())
+    embedding_in_trainer = None
+    subword_trainer = None
     if embedding_in is not None:
         embedding_in_trainer = trainer.get_embedding_in_trainer(
             args, embedding_in.collect_params(), len(vocab))
@@ -379,108 +484,15 @@ def train(args):
                 with utils.print_time('mx.nd.waitall()'):
                     mx.nd.waitall()
 
-                # Mxboard
-                num_update = embedding_out_trainer._optimizer.num_update
-                if embedding_in is not None:
-                    embedding_in_norm = embedding_in.weight.data(
-                        ctx=context[0]).as_in_context(
-                            mx.cpu()).tostype("default").norm(axis=1)
-                    sw.add_histogram(tag='embedding_in_norm',
-                                     values=embedding_in_norm,
-                                     global_step=num_update, bins=200)
-                    embedding_in_grad = embedding_in.weight.grad(
-                        ctx=context[0]).as_in_context(
-                            mx.cpu()).tostype("default").norm(axis=1)
-                    sw.add_histogram(tag='embedding_in_grad',
-                                     values=embedding_in_grad,
-                                     global_step=num_update, bins=200)
-                    # Learning rate
-                    sw.add_scalar(tag='embedding_in_lr',
-                                  value=embedding_in_trainer.learning_rate,
-                                  global_step=num_update)
-                if subword_net is not None:
-                    for k, v in subword_net.collect_params().items():
-                        if v.grad_req == 'null':
-                            continue
-                        sw.add_histogram(tag=k, values=v.data(ctx=context[0]),
-                                         global_step=num_update, bins=200)
-                        sw.add_histogram(tag='grad-' + str(k),
-                                         values=v.grad(ctx=context[0]),
-                                         global_step=num_update, bins=200)
-                    # Predicted word embeddings
-                    sw.add_histogram(tag='subword_embedding_in_norm',
-                                     values=subword_embeddings.norm(axis=1),
-                                     global_step=num_update, bins=200)
-                    # Learning rate
-                    sw.add_scalar(tag='subword_net_lr',
-                                  value=subword_trainer.learning_rate,
-                                  global_step=num_update)
-
-                if embedding_net is not None:
-                    for k, v in embedding_net.collect_params().items():
-                        if v.grad_req == 'null':
-                            continue
-                        sw.add_histogram(tag=k, values=v.data(ctx=context[0]),
-                                         global_step=num_update, bins=200)
-                        sw.add_histogram(tag='grad-' + str(k),
-                                         values=v.grad(ctx=context[0]),
-                                         global_step=num_update, bins=200)
-
-                if auxilary_task_net is not None:
-                    for k, v in auxilary_task_net.collect_params().items():
-                        if v.grad_req == 'null':
-                            continue
-                        sw.add_histogram(tag=k, values=v.data(ctx=context[0]),
-                                         global_step=num_update, bins=200)
-                        sw.add_histogram(tag='grad-' + str(k),
-                                         values=v.grad(ctx=context[0]),
-                                         global_step=num_update, bins=200)
-
-                # Embedding out
-                embedding_out_norm = embedding_out.weight.data(
-                    ctx=context[0]).as_in_context(
-                        mx.cpu()).tostype("default").norm(axis=1)
-                sw.add_histogram(tag='embedding_out_norm',
-                                 values=embedding_out_norm,
-                                 global_step=num_update, bins=200)
-                embedding_out_grad = embedding_out.weight.grad(
-                    ctx=context[0]).as_in_context(
-                        mx.cpu()).tostype("default").norm(axis=1)
-                sw.add_histogram(tag='embedding_out_grad',
-                                 values=embedding_out_grad,
-                                 global_step=num_update, bins=200)
-                # Learning rate
-                sw.add_scalar(tag='embedding_out_lr',
-                              value=embedding_out_trainer.learning_rate,
-                              global_step=num_update)
-
-                # Scalars
-                sw.add_scalar(tag='loss', value=loss.mean().asscalar(),
-                              global_step=num_update)
-                sw.add_scalar(tag='task_loss',
-                              value=task_loss.mean().asscalar(),
-                              global_step=num_update)
-                if not isinstance(aux_loss, int):
-                    sw.add_scalar(tag='aux_loss', value=aux_loss.asscalar(),
-                                  global_step=num_update)
-                if not isinstance(aux_acc, int):
-                    sw.add_scalar(tag='aux_acc', value=aux_acc.asscalar(),
-                                  global_step=num_update)
-                if not isinstance(attention_regularization, int):
-                    sw.add_scalar(tag='attention_regularization',
-                                  value=attention_regularization.asscalar(),
-                                  global_step=num_update)
-
-                eval_dict = evaluation.evaluate(args, embedding_in,
-                                                subword_net, embedding_net,
-                                                vocab, subword_vocab, sw)
-                for k, v in eval_dict.items():
-                    sw.add_scalar(tag=k, value=float(v),
-                                  global_step=num_update)
-
-                sw.flush()
+                log(args, sw, embedding_in, embedding_out, subword_net,
+                    embedding_net, auxilary_task_net, loss, task_loss,
+                    aux_loss, aux_acc, attention_regularization,
+                    subword_embeddings, embedding_in_trainer,
+                    embedding_out_trainer, subword_trainer, vocab,
+                    subword_vocab)
 
                 # Save params after evaluation
+                num_update = embedding_out_trainer._optimizer.num_update
                 utils.save_params(args, embedding_in, embedding_out,
                                   subword_net, num_update)
 
