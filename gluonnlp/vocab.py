@@ -555,9 +555,13 @@ class SubwordVocab(object):
     def to_json(self, path=None):
         """Serialize subword vocab object to json string or write it to path."""
         dict_ = {}
-        dict_['subwordidx_to_subword'] = \
-            self.subword_function.indices_to_subwords(
-                list(range(len(self.subword_function))))
+        try:
+            dict_['subwordidx_to_subword'] = \
+                self.subword_function.indices_to_subwords(
+                    list(range(len(self.subword_function))))
+        except RuntimeError:
+            # Not all subword functions are invertible
+            pass
         if path is None:
             return json.dumps(dict_)
         else:
@@ -736,3 +740,56 @@ class NGramSubwords(_SubwordFunction):
 
     def subwords_to_indices(self, subwords):
         return [self.subword_to_subwordidx[w] for w in subwords]
+
+
+@register
+class NGramHashes(_SubwordFunction):
+    def __init__(self, vocabulary, num_subwords, ngrams=[3, 4, 5, 6]):
+        self.num_subwords = num_subwords
+        self.ngrams = ngrams
+        self.vocabulary = vocabulary
+
+        # Information for __repr__
+        self.vocabulary_repr = repr(vocabulary)
+        self.ngrams = ngrams
+
+    @staticmethod
+    def fasttext_hash_asbytes(s, encoding='utf-8'):
+        h = np.uint32(2166136261)
+        s = s.encode(encoding)
+        old_settings = np.seterr(all='ignore')
+        for c in s:
+            h = h ^ np.uint32(c)
+            h = h * np.uint32(16777619)
+        np.seterr(**old_settings)
+        return h
+
+    @staticmethod
+    def _get_all_ngram_generator(words, ngrams):
+        return ((('<' + word + '>')[i:i + N] for N in ngrams
+                 for i in range((len(word) + 2) - N + 1)) for word in words)
+
+    def __call__(self, words):
+        generator = (np.array([
+            self.fasttext_hash_asbytes(
+                ('<' + word + '>')[i:i + N]) % self.num_subwords
+            for N in self.ngrams for i in range((len(word) + 2) - N + 1)
+        ]) for word in words)
+        return generator
+
+    def __len__(self):
+        return self.num_subwords
+
+    def __repr__(self):
+        return ('NGramHashes(vocabulary={}, '
+                'num_subwords={}, ngrams={})'.format(
+                    self.vocabulary_repr, self.num_subwords, self.ngrams))
+
+    def indices_to_subwords(self, indices):
+        raise RuntimeError('ngram hash function is not invertible.')
+
+    def subwords_to_indices(self, subwords):
+        return [
+            self.fasttext_hash_asbytes(sw) % self.num_subwords
+            for sw in subwords
+        ]
