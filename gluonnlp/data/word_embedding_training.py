@@ -153,11 +153,18 @@ class Wikipedia(CorpusDataset):
         os.makedirs(os.path.join(root, folder_name), exist_ok=True)
         path = os.path.join(root, folder_name, data_file_name)
 
-        # TODO(leezu): Publish the file hash together with the dataset on S3 and check
+        import boto3
+        s3 = boto3.resource('s3')
+        s3_key = self._s3_key.format(self.date, self.language, self.i)
+        print(s3_key + '.sha1')
+        sha1_obj = s3.Bucket(self._s3_bucket).Object(s3_key + '.sha1').get()
+        print(sha1_obj)
+        sha1 = sha1_obj['Body'].read()
+        if os.path.exists(path):
+            if not check_sha1(path, sha1):
+                print(path, 'sha1 does not match. Deleting')
+                os.remove(path)
         if not os.path.exists(path):
-            import boto3
-            s3 = boto3.resource('s3')
-            s3_key = self._s3_key.format(self.date, self.language, self.i)
             s3.Bucket(self._s3_bucket).download_file(s3_key, path)
         return path
 
