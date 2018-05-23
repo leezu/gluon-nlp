@@ -326,6 +326,8 @@ def compute_word_embeddings(args, embedding_in, subword_embeddings, source):
 
 
 def train(args):
+    utils.warnings_and_asserst(args)
+
     train_dataset, vocab, subword_vocab = data.get_train_data(args)
     (embedding_in, embedding_out, subword_net, embedding_net,
      auxilary_task_net, loss_function, aux_loss_function) = model.get_model(

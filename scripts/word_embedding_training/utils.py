@@ -22,6 +22,7 @@ import os
 import tempfile
 import time
 from contextlib import contextmanager
+import warnings
 
 import mxnet as mx
 
@@ -65,3 +66,9 @@ def save_params(args, embedding_in, embedding_out, subword_net,
         p = _get_tempfilename(args.logdir)
         subword_net.collect_params().save(p)
         os.replace(p, os.path.join(args.logdir, 'subword_net'))
+
+
+def warnings_and_asserst(args):
+    if args.word_l2 > 0 and not args.subword_network:
+        warnings.warn('Sparsity regularization enabled '
+                      'without subword network.')
