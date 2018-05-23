@@ -156,10 +156,8 @@ class Wikipedia(CorpusDataset):
         import boto3
         s3 = boto3.resource('s3')
         s3_key = self._s3_key.format(self.date, self.language, self.i)
-        print(s3_key + '.sha1')
         sha1_obj = s3.Bucket(self._s3_bucket).Object(s3_key + '.sha1').get()
-        print(sha1_obj)
-        sha1 = sha1_obj['Body'].read()
+        sha1 = sha1_obj['Body'].read().decode('utf-8').split()[0]
         if os.path.exists(path):
             if not check_sha1(path, sha1):
                 print(path, 'sha1 does not match. Deleting')

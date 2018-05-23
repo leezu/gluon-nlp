@@ -62,7 +62,7 @@ def add_parameters(parser):
 
     # Wikipedia arguments
     group.add_argument(
-        '--wikipedia-date', type=str, default='auto',
+        '--wikipedia-date', type=str, default='20180514',
         help='Version of wikipedia dataset to use. '
         'Auto chooses the most recent version.'
         'Manual specification in format YYYYMMDD, e.g. 20180514.')
