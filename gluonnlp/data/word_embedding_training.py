@@ -139,7 +139,7 @@ class Wikipedia(CorpusDataset):
             _get_home_dir(), 'datasets', 'wikimedia'), i=None):
         root = os.path.expanduser(root)
         if not os.path.isdir(root):
-            os.makedirs(root)
+            os.makedirs(root, exist_ok=True)
         self._root = root
         self.i = i
         self.date = date
