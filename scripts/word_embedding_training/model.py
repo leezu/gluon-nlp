@@ -42,7 +42,6 @@ def add_parameters(parser):
     group.add_argument(
         '--embedding-network', default='LastOutputEmbedding',
         help='Network architecture to create embedding from encoded subwords.')
-    group.add_argument('--subword-function', type=str, default='byte')
     group.add_argument('--auxilary-task', action='store_true',
                        help='Use auxilary word prediction task.')
     group.add_argument('--objective', type=str, default='skipgram',

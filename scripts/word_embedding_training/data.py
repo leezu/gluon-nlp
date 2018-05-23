@@ -53,6 +53,11 @@ def add_parameters(parser):
     group.add_argument('--fixed-subwordsequence-length', action='store_true',
                        help='Use a constant (maximum) subwordsequence length.')
 
+    # Subword function arguments
+    group.add_argument('--subword-function', type=str, default='byte')
+    group.add_argument('--subword-function-ngrams', type=int, nargs='+',
+                       default=[3, 4, 5, 6])
+
     # Text8 arguments
 
     # Wikipedia arguments
@@ -280,7 +285,8 @@ def _get_train_dataset(args, vocab, coded, sentence_boundaries=None):
                                                     vocabulary=vocab)
             elif args.subword_function.lower() == 'ngrams':
                 subword_function = nlp.vocab.create(
-                    'NGramSubwords', vocabulary=vocab, ngrams=[3, 4, 5, 6],
+                    'NGramSubwords', vocabulary=vocab,
+                    ngrams=args.subword_function_ngrams,
                     max_num_subwords=1000000)
             subword_vocab = nlp.SubwordVocab(idx_to_token=vocab.idx_to_token,
                                              subword_function=subword_function,
