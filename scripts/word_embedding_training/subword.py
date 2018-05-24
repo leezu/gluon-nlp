@@ -145,7 +145,9 @@ def create(name, args, **kwargs):
         if args.subword_embedding_size != args.emsize:
             warnings.warn('In {} mode, subword-embedding-size '
                           'must equal emsize. Using emsize {} instead.')
-        kwargs = dict(embed_size=args.emsize, **kwargs)
+        kwargs = dict(embed_size=args.emsize,
+                      sparse_embedding=not args.no_use_sparse_embedding,
+                      **kwargs)
     elif name.lower() == 'selfattentionembedding':
         kwargs = dict(
             output_size=args.emsize,
@@ -201,32 +203,44 @@ class SubwordNetwork(gluon.Block):
 
 @register
 @alias('fasttext')
+# TODO(leezu): HybridBlock causes storage type fallback, but performs still
+# better than non-sparse HybridBlock
 class SumReduce(SubwordNetwork, gluon.HybridBlock):
     """Compute word embedding via summing over all subword embeddings."""
 
     def __init__(self, vocab_size, embed_size,
-                 embedding_initializer=mx.init.Uniform(), **kwargs):
+                 embedding_initializer=mx.init.Uniform(),
+                 sparse_embedding=True, **kwargs):
         super(SumReduce, self).__init__(**kwargs)
         self.vocab_size = vocab_size
         self.embed_size = embed_size
         self.embedding_initializer = embedding_initializer
+        self.sparse_embedding = sparse_embedding
 
         with self.name_scope():
             self.embedding = self._get_embedding()
+            self.sum_reduce = gluon.nn.HybridLambda(
+                lambda F, e, m: F.sum(
+                    F.broadcast_mul(
+                        e, F.expand_dims(m, axis=-1)),
+                    axis=-2))
 
     def _get_embedding(self):
-        embedding = gluon.nn.SparseEmbedding(
-            self.vocab_size, self.embed_size,
-            weight_initializer=self.embedding_initializer)
+        if self.sparse_embedding:
+            embedding = gluon.nn.SparseEmbedding(
+                self.vocab_size, self.embed_size,
+                weight_initializer=self.embedding_initializer)
+        else:
+            embedding = gluon.nn.Embedding(
+                self.vocab_size, self.embed_size,
+                weight_initializer=self.embedding_initializer)
         return embedding
 
     def hybrid_forward(self, F, inputs, mask, begin_state=None):
         """Defines the forward computation. Arguments can be either
         :py:class:`NDArray` or :py:class:`Symbol`."""
         subword_embeddings = self.embedding(inputs)
-        mask = F.expand_dims(mask, axis=-1)
-        subword_masked_embeddings = F.broadcast_mul(subword_embeddings, mask)
-        out = F.sum(subword_masked_embeddings, axis=-2)
+        out = self.sum_reduce(subword_embeddings, mask)
         return out
 
 

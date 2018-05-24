@@ -88,7 +88,7 @@ def get_model(args):
         vocab.set_embedding(token_embedding)
 
         # Get token embedding and subword token embedding
-        embedding = gluon.nn.SparseEmbedding(num_words, args.emsize)
+        embedding = gluon.nn.Embedding(num_words, args.emsize)
         embedding.initialize(ctx=embeddings_context)
         embedding.weight.set_data(vocab.embedding.idx_to_vec)
 
@@ -121,7 +121,7 @@ def get_model(args):
         vocab.set_embedding(token_embedding)
 
         # Output embeddings
-        embedding = gluon.nn.SparseEmbedding(
+        embedding = gluon.nn.Embedding(
             len(token_embedding.idx_to_token), args.emsize)
         embedding.initialize(ctx=embeddings_context)
         embedding.weight.set_data(vocab.embedding.idx_to_vec)

@@ -54,6 +54,9 @@ def add_parameters(parser):
     group.add_argument(
         '--no-zero-embedding-out-initialization', action='store_true',
         help='Don\'t initialize context embedding matrix as 0 as in fasttext.')
+    group.add_argument('--no-use-sparse-embedding', action='store_true',
+                       help='Use sparse gradients when updating word or '
+                       'subword embeddings.')
 
 
 def get_model(args, train_dataset, vocab, subword_vocab):
@@ -74,16 +77,28 @@ def get_model(args, train_dataset, vocab, subword_vocab):
         embedding_out_initializer = embedding_initializer
 
     # Output embeddings
-    embedding_out = gluon.nn.SparseEmbedding(
-        num_tokens, args.emsize, weight_initializer=embedding_out_initializer)
+    if not args.no_use_sparse_embedding:
+        embedding_out = gluon.nn.SparseEmbedding(
+            num_tokens, args.emsize,
+            weight_initializer=embedding_out_initializer)
+    else:
+        embedding_out = gluon.nn.Embedding(
+            num_tokens, args.emsize,
+            weight_initializer=embedding_out_initializer)
     embedding_out.initialize(ctx=embeddings_context)
     if not args.dont_hybridize:
         embedding_out.hybridize()
 
     # Word level input embeddings
     if not args.no_token_embedding:
-        embedding_in = gluon.nn.SparseEmbedding(
-            num_tokens, args.emsize, weight_initializer=embedding_initializer)
+        if not args.no_use_sparse_embedding:
+            embedding_in = gluon.nn.SparseEmbedding(
+                num_tokens, args.emsize,
+                weight_initializer=embedding_initializer)
+        else:
+            embedding_in = gluon.nn.Embedding(
+                num_tokens, args.emsize,
+                weight_initializer=embedding_initializer)
         embedding_in.initialize(ctx=embeddings_context)
         if not args.dont_hybridize:
             embedding_in.hybridize()

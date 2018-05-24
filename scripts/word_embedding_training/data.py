@@ -288,6 +288,14 @@ def _get_train_dataset(args, vocab, coded, sentence_boundaries=None):
                     'NGramSubwords', vocabulary=vocab,
                     ngrams=args.subword_function_ngrams,
                     max_num_subwords=1000000)
+            elif args.subword_function.lower() == 'ngramshash':
+                subword_function = nlp.vocab.create(
+                    'NGramHashes', vocabulary=vocab,
+                    ngrams=args.subword_function_ngrams, num_subwords=2000000)
+            else:
+                raise RuntimeError('Unsupported subword-function {}'.format(
+                    args.subword_function))
+
             subword_vocab = nlp.SubwordVocab(idx_to_token=vocab.idx_to_token,
                                              subword_function=subword_function,
                                              merge_indices=False)
