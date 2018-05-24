@@ -33,6 +33,32 @@ import gluonnlp as nlp
 import utils
 
 
+def add_parameters(parser):
+    group = parser.add_argument_group('Evaluation arguments')
+
+    # General
+    group.add_argument('--eval-interval', type=int, default=1000,
+                       help='evaluation interval')
+
+    # Logging
+    group.add_argument(
+        '--save-embeddings-to-tensorboard-projector', action='store_true',
+        help='Enable visualization with Tensorboard embeddings Projector. '
+        'Embeddings for each of the evaluation datasets are saved.')
+
+    # Datasets
+    group.add_argument(
+        '--similarity-datasets', type=str,
+        default=nlp.data.word_embedding_evaluation.word_similarity_datasets,
+        nargs='*',
+        help='Word similarity datasets to use for intrinsic evaluation.')
+    group.add_argument(
+        '--similarity-functions', type=str,
+        default=nlp.embedding.evaluation.list_evaluation_functions(
+            'similarity'), nargs='+',
+        help='Word similarity functions to use for intrinsic evaluation.')
+
+
 def construct_vocab_embedding_for_dataset(args, tokens, vocab, embedding_in,
                                           subword_vocab=None, subword_net=None,
                                           embedding_net=None):
@@ -212,9 +238,11 @@ def evaluate_similarity(args, vocab, subword_vocab, embedding_in, subword_net,
     tokens = list(tokens)
 
     # Get token embedding matrix based on word and subword information
-    token_to_idx, idx_to_vec = construct_vocab_embedding_for_dataset(
-        args, tokens, vocab, embedding_in, subword_vocab, subword_net,
-        embedding_net)
+    with utils.print_time('Get token embedding matrix '
+                          'for {}'.format(dataset_name)):
+        token_to_idx, idx_to_vec = construct_vocab_embedding_for_dataset(
+            args, tokens, vocab, embedding_in, subword_vocab, subword_net,
+            embedding_net)
     dataset, share_dropped = _filter_similarity_dataset(token_to_idx, dataset)
 
     if not dataset:
@@ -225,12 +253,14 @@ def evaluate_similarity(args, vocab, subword_vocab, embedding_in, subword_net,
                      for d in dataset]
 
     if mxboard_summary_writer is not None:
-        idx_to_token = [
-            x[0] for x in sorted(token_to_idx.items(), key=lambda x: x[1])
-        ]
-        mxboard_summary_writer.add_embedding(
-            tag='similarity-{}'.format(dataset_name_wkwargs),
-            embedding=idx_to_vec.as_in_context(mx.cpu()), labels=idx_to_token)
+        if args.save_embeddings_to_tensorboard_projector:
+            idx_to_token = [
+                x[0] for x in sorted(token_to_idx.items(), key=lambda x: x[1])
+            ]
+            mxboard_summary_writer.add_embedding(
+                tag='similarity-{}'.format(dataset_name_wkwargs),
+                embedding=idx_to_vec.as_in_context(
+                    mx.cpu()), labels=idx_to_token)
 
     # Evaluate
     words1, words2, scores = zip(*dataset_coded)

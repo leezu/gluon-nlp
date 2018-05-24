@@ -61,23 +61,27 @@ def log(args, sw, embedding_in, embedding_out, subword_net, embedding_net,
         sw.add_histogram(tag='embedding_in_grad_norm',
                          values=embedding_in_grad_norm, global_step=num_update,
                          bins=200)
-        embedding_in_data = embedding_in.weight.data(
-            ctx=context[0]).as_in_context(mx.cpu()).tostype("default")
-        sw.add_histogram(tag='embedding_in', values=embedding_in_data,
-                         global_step=num_update, bins=200)
-        embedding_in_grad = embedding_in.weight.grad(
-            ctx=context[0]).as_in_context(mx.cpu()).tostype("default")
-        sw.add_histogram(tag='embedding_in_grad', values=embedding_in_grad,
-                         global_step=num_update, bins=200)
-        # Learning rate
-    if subword_net is not None:
-        for k, v in subword_net.collect_params().items():
-            sw.add_histogram(tag=k, values=v.data(ctx=context[0]),
+        if args.extensive_mxboard:
+            embedding_in_data = embedding_in.weight.data(
+                ctx=context[0]).as_in_context(mx.cpu()).tostype("default")
+            sw.add_histogram(tag='embedding_in', values=embedding_in_data,
                              global_step=num_update, bins=200)
-            if v.grad_req != 'null':
-                sw.add_histogram(tag='grad-' + str(k),
-                                 values=v.grad(ctx=context[0]),
+            embedding_in_grad = embedding_in.weight.grad(
+                ctx=context[0]).as_in_context(mx.cpu()).tostype("default")
+            sw.add_histogram(tag='embedding_in_grad', values=embedding_in_grad,
+                             global_step=num_update, bins=200)
+    # Learning rate
+    if subword_net is not None:
+        if (args.extensive_mxboard or args.subword_network.lower() not in [
+                'sumreduce', 'meanreduce', 'fasttext'
+        ]):
+            for k, v in subword_net.collect_params().items():
+                sw.add_histogram(tag=k, values=v.data(ctx=context[0]),
                                  global_step=num_update, bins=200)
+                if v.grad_req != 'null':
+                    sw.add_histogram(tag='grad-' + str(k),
+                                     values=v.grad(ctx=context[0]),
+                                     global_step=num_update, bins=200)
 
         # Also report norm of the subword embeddings
         if args.subword_network.lower() in [
@@ -136,14 +140,16 @@ def log(args, sw, embedding_in, embedding_out, subword_net, embedding_net,
         sw.add_histogram(tag='embedding_out_grad_norm',
                          values=embedding_out_grad_norm,
                          global_step=num_update, bins=200)
-        embedding_out_data = embedding_out.weight.data(
-            ctx=context[0]).as_in_context(mx.cpu()).tostype("default")
-        sw.add_histogram(tag='embedding_out', values=embedding_out_data,
-                         global_step=num_update, bins=200)
-        embedding_out_grad = embedding_out.weight.grad(
-            ctx=context[0]).as_in_context(mx.cpu()).tostype("default")
-        sw.add_histogram(tag='embedding_out_grad', values=embedding_out_grad,
-                         global_step=num_update, bins=200)
+        if args.extensive_mxboard:
+            embedding_out_data = embedding_out.weight.data(
+                ctx=context[0]).as_in_context(mx.cpu()).tostype("default")
+            sw.add_histogram(tag='embedding_out', values=embedding_out_data,
+                             global_step=num_update, bins=200)
+            embedding_out_grad = embedding_out.weight.grad(
+                ctx=context[0]).as_in_context(mx.cpu()).tostype("default")
+            sw.add_histogram(tag='embedding_out_grad',
+                             values=embedding_out_grad, global_step=num_update,
+                             bins=200)
 
     # Scalars
     if not isinstance(loss, int):

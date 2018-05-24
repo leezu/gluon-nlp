@@ -31,6 +31,7 @@ import model
 import subword
 import trainer
 import utils
+import evaluation
 
 
 def get_args(parameter_adders=None):
@@ -38,23 +39,6 @@ def get_args(parameter_adders=None):
     parser = argparse.ArgumentParser(
         description='Word embedding training with Gluon.',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-
-    # Evaluation arguments
-    group = parser.add_argument_group('Evaluation arguments')
-    group.add_argument('--eval-interval', type=int, default=1000,
-                       help='evaluation interval')
-
-    ## Datasets
-    group.add_argument(
-        '--similarity-datasets', type=str,
-        default=nlp.data.word_embedding_evaluation.word_similarity_datasets,
-        nargs='*',
-        help='Word similarity datasets to use for intrinsic evaluation.')
-    group.add_argument(
-        '--similarity-functions', type=str,
-        default=nlp.embedding.evaluation.list_evaluation_functions(
-            'similarity'), nargs='+',
-        help='Word similarity functions to use for intrinsic evaluation.')
 
     # Computation options
     group = parser.add_argument_group('Computation arguments')
@@ -73,6 +57,9 @@ def get_args(parameter_adders=None):
                        help='Directory to store logs in.'
                        'Tensorboard compatible logs are stored there. '
                        'Defaults to a random directory in ./logs')
+    group.add_argument('--extensive-mxboard', type=str, default=None,
+                       help='Also log things to mxboard that cause a '
+                       'significant slowdown.')
 
     # Debugging arguments
     group = parser.add_argument_group('Debugging arguments')
@@ -96,6 +83,7 @@ def get_args(parameter_adders=None):
     plot.add_parameters(parser)
     trainer.add_parameters(parser)
     model.add_parameters(parser)
+    evaluation.add_parameters(parser)
 
     if parameter_adders is not None:
         for f in parameter_adders:
