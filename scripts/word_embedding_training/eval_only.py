@@ -36,6 +36,7 @@ import evaluation
 import gluonnlp as nlp
 import utils
 import subword
+import word_embedding_training
 
 
 def add_parameters(parser):
@@ -137,6 +138,9 @@ def load_and_evaluate(args):
     for k, v in eval_dict.items():
         for i in range(100):
             sw.add_scalar(tag=k, value=float(v), global_step=i)
+            word_embedding_training.log(args, sw, embedding_in, None,
+                                        subword_net, None, None, 0, 0, 0, 0, 0,
+                                        None, i, vocab, subword_vocab)
     for k, v in eval_dict.items():
         print('{:.2f}'.format(v), '\t', k)
 

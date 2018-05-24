@@ -45,11 +45,10 @@ import trainer
 ###############################################################################
 def log(args, sw, embedding_in, embedding_out, subword_net, embedding_net,
         auxilary_task_net, loss, task_loss, aux_loss, aux_acc,
-        attention_regularization, subword_embeddings, embedding_in_trainer,
-        embedding_out_trainer, subword_trainer, vocab, subword_vocab):
+        attention_regularization, subword_embeddings, num_update, vocab,
+        subword_vocab):
     context = utils.get_context(args)
     # Mxboard
-    num_update = embedding_out_trainer._optimizer.num_update
     if embedding_in is not None:
         embedding_in_norm = embedding_in.weight.data(
             ctx=context[0]).as_in_context(
@@ -71,9 +70,6 @@ def log(args, sw, embedding_in, embedding_out, subword_net, embedding_net,
         sw.add_histogram(tag='embedding_in_grad', values=embedding_in_grad,
                          global_step=num_update, bins=200)
         # Learning rate
-        sw.add_scalar(tag='embedding_in_lr',
-                      value=embedding_in_trainer.learning_rate,
-                      global_step=num_update)
     if subword_net is not None:
         for k, v in subword_net.collect_params().items():
             sw.add_histogram(tag=k, values=v.data(ctx=context[0]),
@@ -100,14 +96,10 @@ def log(args, sw, embedding_in, embedding_out, subword_net, embedding_net,
 
         # Log the embeddings predicted for this batch based on the subword
         # units
-        sw.add_histogram(tag='predicted_embedding_in_norm',
-                         values=subword_embeddings.norm(axis=1),
-                         global_step=num_update, bins=200)
-
-        # Learning rate
-        sw.add_scalar(tag='subword_net_lr',
-                      value=subword_trainer.learning_rate,
-                      global_step=num_update)
+        if subword_embeddings is not None:
+            sw.add_histogram(tag='predicted_embedding_in_norm',
+                             values=subword_embeddings.norm(axis=1),
+                             global_step=num_update, bins=200)
 
     if embedding_net is not None:
         for k, v in embedding_net.collect_params().items():
@@ -130,35 +122,34 @@ def log(args, sw, embedding_in, embedding_out, subword_net, embedding_net,
                              global_step=num_update, bins=200)
 
     # Embedding out
-    embedding_out_norm = embedding_out.weight.data(
-        ctx=context[0]).as_in_context(
-            mx.cpu()).tostype("default").norm(axis=1)
-    sw.add_histogram(tag='embedding_out_norm', values=embedding_out_norm,
-                     global_step=num_update, bins=200)
-    embedding_out_grad_norm = embedding_out.weight.grad(
-        ctx=context[0]).as_in_context(
-            mx.cpu()).tostype("default").norm(axis=1)
-    sw.add_histogram(tag='embedding_out_grad_norm',
-                     values=embedding_out_grad_norm, global_step=num_update,
-                     bins=200)
-    embedding_out_data = embedding_out.weight.data(
-        ctx=context[0]).as_in_context(mx.cpu()).tostype("default")
-    sw.add_histogram(tag='embedding_out', values=embedding_out_data,
-                     global_step=num_update, bins=200)
-    embedding_out_grad = embedding_out.weight.grad(
-        ctx=context[0]).as_in_context(mx.cpu()).tostype("default")
-    sw.add_histogram(tag='embedding_out_grad', values=embedding_out_grad,
-                     global_step=num_update, bins=200)
-    # Learning rate
-    sw.add_scalar(tag='embedding_out_lr',
-                  value=embedding_out_trainer.learning_rate,
-                  global_step=num_update)
+    if embedding_out is not None:
+        embedding_out_norm = embedding_out.weight.data(
+            ctx=context[0]).as_in_context(
+                mx.cpu()).tostype("default").norm(axis=1)
+        sw.add_histogram(tag='embedding_out_norm', values=embedding_out_norm,
+                         global_step=num_update, bins=200)
+        embedding_out_grad_norm = embedding_out.weight.grad(
+            ctx=context[0]).as_in_context(
+                mx.cpu()).tostype("default").norm(axis=1)
+        sw.add_histogram(tag='embedding_out_grad_norm',
+                         values=embedding_out_grad_norm,
+                         global_step=num_update, bins=200)
+        embedding_out_data = embedding_out.weight.data(
+            ctx=context[0]).as_in_context(mx.cpu()).tostype("default")
+        sw.add_histogram(tag='embedding_out', values=embedding_out_data,
+                         global_step=num_update, bins=200)
+        embedding_out_grad = embedding_out.weight.grad(
+            ctx=context[0]).as_in_context(mx.cpu()).tostype("default")
+        sw.add_histogram(tag='embedding_out_grad', values=embedding_out_grad,
+                         global_step=num_update, bins=200)
 
     # Scalars
-    sw.add_scalar(tag='loss', value=loss.mean().asscalar(),
-                  global_step=num_update)
-    sw.add_scalar(tag='task_loss', value=task_loss.asscalar(),
-                  global_step=num_update)
+    if not isinstance(loss, int):
+        sw.add_scalar(tag='loss', value=loss.mean().asscalar(),
+                      global_step=num_update)
+    if not isinstance(task_loss, int):
+        sw.add_scalar(tag='task_loss', value=task_loss.asscalar(),
+                      global_step=num_update)
     if not isinstance(aux_loss, int):
         sw.add_scalar(tag='aux_loss', value=aux_loss.asscalar(),
                       global_step=num_update)
@@ -176,6 +167,22 @@ def log(args, sw, embedding_in, embedding_out, subword_net, embedding_net,
         sw.add_scalar(tag=k, value=float(v), global_step=num_update)
 
     sw.flush()
+
+
+def log_learning_rates(sw, num_update, embedding_in_trainer,
+                       embedding_out_trainer, subword_trainer):
+    if embedding_in_trainer is not None:
+        sw.add_scalar(tag='embedding_in_lr',
+                      value=embedding_in_trainer.learning_rate,
+                      global_step=num_update)
+    if subword_trainer is not None:
+        sw.add_scalar(tag='subword_net_lr',
+                      value=subword_trainer.learning_rate,
+                      global_step=num_update)
+    if embedding_out_trainer is not None:
+        sw.add_scalar(tag='embedding_out_lr',
+                      value=embedding_out_trainer.learning_rate,
+                      global_step=num_update)
 
 
 ###############################################################################
@@ -541,12 +548,14 @@ def train(args):
                 with utils.print_time('mx.nd.waitall()'):
                     mx.nd.waitall()
 
+                num_update = embedding_out_trainer._optimizer.num_update
                 log(args, sw, embedding_in, embedding_out, subword_net,
                     embedding_net, auxilary_task_net, loss,
                     normalized_task_loss, aux_loss, aux_acc,
-                    attention_regularization, subword_embeddings,
-                    embedding_in_trainer, embedding_out_trainer,
-                    subword_trainer, vocab, subword_vocab)
+                    attention_regularization, subword_embeddings, num_update,
+                    vocab, subword_vocab)
+                log_learning_rates(sw, num_update, embedding_in_trainer,
+                                   embedding_out_trainer, subword_trainer)
 
                 # Save params after evaluation
                 num_update = embedding_out_trainer._optimizer.num_update
