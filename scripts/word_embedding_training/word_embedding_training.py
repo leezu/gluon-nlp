@@ -482,12 +482,12 @@ def train(args):
 
             # Update parameters
             if subword_net is not None:
-                if args.subword_network.lower() in [
-                        'sumreduce', 'meanreduce', 'fasttext'
-                ]:
+                if args.subword_network.lower() in \
+                   ['sumreduce', 'meanreduce', 'fasttext'] \
+                   and 'adagrad' not in args.subword_sparse_optimizer:
                     subword_trainer.set_learning_rate(args.subword_sparse_lr *
                                                       (1 - progress))
-                else:
+                elif 'adagrad' not in args.subword_dense_optimizer:
                     subword_trainer.set_learning_rate(args.subword_dense_lr *
                                                       (1 - progress))
                 if args.normalize_gradient.lower() in ['count', 'l2']:
@@ -517,8 +517,9 @@ def train(args):
                     sys.exit(1)
 
             if embedding_in is not None:
-                embedding_in_trainer.set_learning_rate(args.word_lr *
-                                                       (1 - progress))
+                if 'adagrad' not in args.word_optimizer:
+                    embedding_in_trainer.set_learning_rate(
+                        args.word_lr * (1 - progress))
                 # Force eager update before evaluation
                 if i % args.eval_interval == 0:
                     embedding_in_trainer.lazy_update = False
@@ -539,8 +540,9 @@ def train(args):
 
                 embedding_in_trainer.lazy_update = True
 
-            embedding_out_trainer.set_learning_rate(args.word_lr *
-                                                    (1 - progress))
+            if 'adagrad' not in args.word_optimizer:
+                embedding_out_trainer.set_learning_rate(
+                    args.word_lr * (1 - progress))
             if args.normalize_gradient.lower() in ['count', 'l2']:
                 trainer.normalize_sparse_grads(args, embedding_out,
                                                unique_targets_counts,
