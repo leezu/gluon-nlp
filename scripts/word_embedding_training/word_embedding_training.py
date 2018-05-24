@@ -80,7 +80,9 @@ def log(args, sw, embedding_in, embedding_out, subword_net, embedding_net,
                                  global_step=num_update, bins=200)
 
         # Also report norm of the subword embeddings
-        if args.subword_network.lower() in ['fasttext', 'sumreduce']:
+        if args.subword_network.lower() in [
+                'sumreduce', 'meanreduce', 'fasttext'
+        ]:
             subword_embedding_norm = embedding_in.weight.data(
                 ctx=context[0]).as_in_context(
                     mx.cpu()).tostype("default").norm(axis=1)
@@ -474,7 +476,9 @@ def train(args):
 
             # Update parameters
             if subword_net is not None:
-                if args.subword_network.lower() in ['fasttext', 'sumreduce']:
+                if args.subword_network.lower() in [
+                        'sumreduce', 'meanreduce', 'fasttext'
+                ]:
                     subword_trainer.set_learning_rate(args.subword_sparse_l2 *
                                                       (1 - progress))
                 else:
@@ -482,7 +486,8 @@ def train(args):
                                                       (1 - progress))
                 if args.normalize_gradient.lower() in ['count', 'l2']:
                     assert args.subword_network.lower() in \
-                        ['fasttext', 'sumreduce'], 'Normalizing dense grad ' \
+                        ['sumreduce', 'meanreduce', 'fasttext'], \
+                        'Normalizing dense grad ' \
                         ' by count or L2 is not supported.'
 
                     trainer.normalize_sparse_grads(
@@ -491,7 +496,7 @@ def train(args):
                         unique_sources_unique_subwordsequences_indices)
                 elif args.normalize_gradient.lower() == 'batch_size':
                     if args.subword_network.lower() in \
-                             ['fasttext', 'sumreduce']:
+                           ['sumreduce', 'meanreduce', 'fasttext']:
                         subword_trainer.step(
                             batch_size=
                             unique_sources_subwordsequences_count_nonmasked)

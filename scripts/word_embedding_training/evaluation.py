@@ -260,7 +260,7 @@ def evaluate_num_zero_rows(args, embedding_in, subword_net, vocab,
         'nonzero_word_vectors': len(vocab) - num_zero_word_vectors
     }
 
-    if args.subword_network.lower() in ['sumreduce', 'fasttext']:
+    if args.subword_network.lower() in ['sumreduce', 'meanreduce', 'fasttext']:
         subword_idx_to_vec = subword_net.embedding.weight.data(
             ctx=context[0]).as_in_context(mx.cpu()).tostype('default')
         subword_embedding_norm = mx.nd.norm(subword_idx_to_vec, axis=1)

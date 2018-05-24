@@ -115,7 +115,7 @@ def get_embedding_out_trainer(args, params):
 
 def get_subword_trainer(args, params, num_subword_units):
     """Parase args depending on subwort network and return trainer."""
-    if args.subword_network.lower() in ['sumreduce', 'fasttext']:
+    if args.subword_network.lower() in ['sumreduce', 'meanreduce', 'fasttext']:
         return _get_sparse_subword_trainer(args, params, num_subword_units)
     else:
         return _get_dense_subword_trainer(args, params)

@@ -108,7 +108,9 @@ def get_model(args, train_dataset, vocab, subword_vocab):
     # Subword level input embeddings
     if args.subword_network:
         # Fasttext or RNN
-        if args.subword_network.lower() in ['fasttext', 'sumreduce']:
+        if args.subword_network.lower() in [
+                'sumreduce', 'meanreduce', 'fasttext'
+        ]:
             # Fasttext mode
             subword_net = subword.create(
                 name=args.subword_network, args=args,
