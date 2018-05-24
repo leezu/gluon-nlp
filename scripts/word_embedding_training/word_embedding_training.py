@@ -362,6 +362,7 @@ def train(args):
     sw.add_text(tag='args', text=str(args), global_step=0)
 
     indices = np.arange(len(train_dataset))
+    num_update = 0
     for epoch in range(args.epochs):
         np.random.shuffle(indices)
         with utils.print_time('create batch indices'):
@@ -373,6 +374,7 @@ def train(args):
         for i, batch_idx in tqdm.tqdm(
                 enumerate(batches), total=len(batches), ascii=True,
                 smoothing=1, dynamic_ncols=True):
+            num_update += len(batch_idx)
             if 'rnn' in args.subword_network.lower():
                 mx.nd.waitall()  # wait to avoid cudnn memory related crashes
 
@@ -548,7 +550,6 @@ def train(args):
                 with utils.print_time('mx.nd.waitall()'):
                     mx.nd.waitall()
 
-                num_update = embedding_out_trainer._optimizer.num_update
                 log(args, sw, embedding_in, embedding_out, subword_net,
                     embedding_net, auxilary_task_net, loss,
                     normalized_task_loss, aux_loss, aux_acc,
@@ -558,7 +559,6 @@ def train(args):
                                    embedding_out_trainer, subword_trainer)
 
                 # Save params after evaluation
-                num_update = embedding_out_trainer._optimizer.num_update
                 utils.save_params(args, embedding_in, embedding_out,
                                   subword_net, num_update)
 
