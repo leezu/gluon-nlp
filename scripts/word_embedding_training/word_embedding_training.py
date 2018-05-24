@@ -449,10 +449,10 @@ def train(args):
                 task_loss = loss_function(pred, label)
 
                 # Normalize task loss
-                if args.normalize_loss in ['log_count', 'count']:
+                if 'count' in args.normalize_loss:
                     _, source_count_inverse, source_count = np.unique(
                         source_np, return_counts=True, return_inverse=True)
-                    if args.normalize_loss == 'log_count':
+                    if 'log' in args.normalize_loss:
                         source_count = np.log(source_count) + 1
                     task_loss_normalization = 1 / mx.nd.array(
                         source_count[source_count_inverse], ctx=context[0])
