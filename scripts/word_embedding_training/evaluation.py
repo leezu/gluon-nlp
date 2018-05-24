@@ -24,6 +24,7 @@ This example shows how to train word embeddings.
 """
 
 import itertools
+import os
 
 import mxnet as mx
 import numpy as np
@@ -263,14 +264,21 @@ def evaluate_similarity(args, vocab, subword_vocab, embedding_in, subword_net,
                     mx.cpu()), labels=idx_to_token)
 
     # Evaluate
+    context = utils.get_context(args)
+    if "MXNET_GPU_MEM_POOL_TYPE" not in os.environ or \
+       os.environ["MXNET_GPU_MEM_POOL_TYPE"] != "Round":
+        context[0] = mx.cpu()
     words1, words2, scores = zip(*dataset_coded)
     evaluator = nlp.embedding.evaluation.WordEmbeddingSimilarity(
-        idx_to_vec=idx_to_vec, similarity_function=similarity_function)
-    evaluator.initialize(ctx=mx.cpu())
+        idx_to_vec=idx_to_vec.as_in_context(context[0]),
+        similarity_function=similarity_function)
+    evaluator.initialize(ctx=context[0])
     if not args.dont_hybridize:
         evaluator.hybridize()
 
-    pred_similarity = evaluator(mx.nd.array(words1), mx.nd.array(words2))
+    pred_similarity = evaluator(
+        mx.nd.array(words1, ctx=context[0]), mx.nd.array(
+            words2, ctx=context[0]))
 
     sr = stats.spearmanr(pred_similarity.asnumpy(), np.array(scores))
     return sr.correlation, share_dropped
