@@ -485,10 +485,10 @@ def train(args):
                 if args.subword_network.lower() in [
                         'sumreduce', 'meanreduce', 'fasttext'
                 ]:
-                    subword_trainer.set_learning_rate(args.subword_sparse_l2 *
+                    subword_trainer.set_learning_rate(args.subword_sparse_lr *
                                                       (1 - progress))
                 else:
-                    subword_trainer.set_learning_rate(args.subword_dense_l2 *
+                    subword_trainer.set_learning_rate(args.subword_dense_lr *
                                                       (1 - progress))
                 if args.normalize_gradient.lower() in ['count', 'l2']:
                     assert args.subword_network.lower() in \
@@ -517,7 +517,7 @@ def train(args):
                     sys.exit(1)
 
             if embedding_in is not None:
-                embedding_in_trainer.set_learning_rate(args.word_l2 *
+                embedding_in_trainer.set_learning_rate(args.word_lr *
                                                        (1 - progress))
                 # Force eager update before evaluation
                 if i % args.eval_interval == 0:
@@ -539,7 +539,7 @@ def train(args):
 
                 embedding_in_trainer.lazy_update = True
 
-            embedding_out_trainer.set_learning_rate(args.word_l2 *
+            embedding_out_trainer.set_learning_rate(args.word_lr *
                                                     (1 - progress))
             if args.normalize_gradient.lower() in ['count', 'l2']:
                 trainer.normalize_sparse_grads(args, embedding_out,

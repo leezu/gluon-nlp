@@ -38,7 +38,7 @@ import utils
 def add_parameters(parser):
     group = parser.add_argument_group('Word level optimization arguments')
     group.add_argument('--word-optimizer', type=str, default='proximalsgd')
-    group.add_argument('--word-lr', type=float, default=0.1,
+    group.add_argument('--word-lr', type=float, default=0.01,
                        help='Learning rate for embeddings matrix.')
     group.add_argument('--word-lr-schedule', type=str, default='linear',
                        help='Learning rate schedule.')

@@ -67,7 +67,7 @@ def get_args(parameter_adders=None):
                        help='Enable debug mode checks.')
 
     # Deprecated arguments
-    group.add_argument('--normalize-loss', type=str, default='log_count',
+    group.add_argument('--normalize-loss', type=str, default='none',
                        help='Normalize the word embedding task loss. '
                        'Supported are [log_count, count, mean, none].')
     group.add_argument('--normalize-gradient', type=str, default='none',
