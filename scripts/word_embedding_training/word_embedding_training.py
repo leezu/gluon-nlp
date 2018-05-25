@@ -537,7 +537,6 @@ def train(args):
                     logging.error('--normalize-gradient {} is invalid'.format(
                         args.normalize_gradient))
                     sys.exit(1)
-
                 embedding_in_trainer.lazy_update = True
 
             if 'adagrad' not in args.word_optimizer:

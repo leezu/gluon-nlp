@@ -30,14 +30,16 @@ import warnings
 import mxnet as mx
 import numpy as np
 from mxnet import gluon
-from mxnet.ndarray import NDArray, full, proximal_sgd_update, sgd_update
+from mxnet.ndarray import (NDArray, zeros, full, clip, sqrt, square, sparse,
+                           proximal_sgd_update, sgd_update,
+                           proximal_adagrad_update)
 
 import utils
 
 
 def add_parameters(parser):
     group = parser.add_argument_group('Word level optimization arguments')
-    group.add_argument('--word-optimizer', type=str, default='proximalsgd')
+    group.add_argument('--word-optimizer', type=str, default='proximaladagrad')
     group.add_argument('--word-lr', type=float, default=0.01,
                        help='Learning rate for embeddings matrix.')
     group.add_argument('--word-lr-schedule', type=str, default='linear',
@@ -64,7 +66,7 @@ def add_parameters(parser):
     group = parser.add_argument_group(
         'Sparse subword network optimization arguments')
     group.add_argument('--subword-sparse-optimizer', type=str,
-                       default='proximalsgd',
+                       default='proximaladagrad',
                        help='Optimizer used to train subword network.')
     group.add_argument('--subword-sparse-lr', type=float, default=0.1,
                        help='Learning rate for subword embedding network.')
@@ -77,7 +79,7 @@ def add_parameters(parser):
 
 
 def get_embedding_in_trainer(args, params, num_words):
-    if args.word_optimizer.lower() == 'proximalsgd':
+    if 'proximal' in args.word_optimizer.lower():
         if not args.subword_network.lower() and args.word_l2 != 0:
             warnings.warn('Enabling sparsity regularization {} '
                           'without having a subword net. '.format(
@@ -86,7 +88,8 @@ def get_embedding_in_trainer(args, params, num_words):
         logging.info('Setting l2 sparsity factor for words '
                      'to {}'.format(l2))
         optimizer = mx.optimizer.Optimizer.create_optimizer(
-            args.word_optimizer, learning_rate=args.word_lr, l2=l2)
+            args.word_optimizer, learning_rate=args.word_lr,
+            l2_regularization_strength=l2)
     elif args.word_optimizer.lower() == 'sgd':
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.word_optimizer, learning_rate=args.word_lr)
@@ -100,11 +103,11 @@ def get_embedding_in_trainer(args, params, num_words):
 
 
 def get_embedding_out_trainer(args, params):
-    if args.word_optimizer.lower() in ['proximalsgd', 'sgd']:
-        # Ignore group sparsity for context matrix
+    # Ignore group sparsity for context matrix
+    if 'sgd' in args.word_optimizer.lower():
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             'sgd', learning_rate=args.word_lr)
-    elif args.word_optimizer.lower() in ['adagrad']:
+    elif 'adagrad' in args.word_optimizer.lower():
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             'adagrad', learning_rate=args.word_lr)
     else:
@@ -122,20 +125,18 @@ def get_subword_trainer(args, params, num_subword_units):
 
 
 def _get_sparse_subword_trainer(args, params, num_subword_units):
-    if args.subword_sparse_optimizer.lower() == 'proximalsgd':
+    if 'proximal' in args.subword_sparse_optimizer.lower():
         l2 = args.subword_sparse_l2 * 1 / num_subword_units
         logging.info('Setting l2 sparsity factor for subwords '
                      'to {}'.format(l2))
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.subword_sparse_optimizer,
-            learning_rate=args.subword_sparse_lr, l2=l2)
-    elif args.subword_sparse_optimizer.lower() == 'sgd':
+            learning_rate=args.subword_sparse_lr,
+            l2_regularization_strength=l2)
+    elif args.subword_sparse_optimizer.lower() in ['sgd', 'adagrad']:
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.subword_sparse_optimizer,
             learning_rate=args.subword_sparse_lr)
-    elif args.word_optimizer.lower() in ['adagrad']:
-        optimizer = mx.optimizer.Optimizer.create_optimizer(
-            'adagrad', learning_rate=args.subword_sparse_lr)
     else:
         logging.error('Unsupported optimizer')
         sys.exit(1)
@@ -205,21 +206,22 @@ class ProximalSGD(mx.optimizer.Optimizer):
 
     Parameters
     ----------
-    l2 : float
-       Sparsity lambda for l2.
+    l2_regularization_strength : float
+       Strength of L2 regularization.
     lazy_update : bool, optional
        Default is True. If True, lazy updates are applied \
        if the storage types of weight and grad are both ``row_sparse``.
     """
 
-    def __init__(self, l2=0.0, lazy_update=True, **kwargs):
+    def __init__(self, l2_regularization_strength=0.0, lazy_update=True,
+                 **kwargs):
         super(ProximalSGD, self).__init__(**kwargs)
-        self.l2 = l2
+        self.l2_regularization_strength = l2_regularization_strength
         self.lazy_update = lazy_update
 
     def create_state(self, index, weight):
         last_update_buffer = None
-        if self.l2 != 0.0:
+        if self.l2_regularization_strength != 0.0:
             last_update_buffer = full((weight.shape[0], ), self.num_update,
                                       weight.context)
         return last_update_buffer
@@ -239,10 +241,89 @@ class ProximalSGD(mx.optimizer.Optimizer):
             proximal_sgd_update(
                 weight, grad, out=weight, lazy_update=self.lazy_update, lr=lr,
                 last_update_buffer=state, current_update=self.num_update,
-                sparsity=self.l2)
+                sparsity=self.l2_regularization_strength)
         else:
             sgd_update(weight, grad, out=weight, lazy_update=self.lazy_update,
                        lr=lr, **kwargs)
+
+    def update(self, index, weight, grad, state):
+        self._update_impl(index, weight, grad, state)
+
+
+# pylint: disable=line-too-long
+@mx.optimizer.register
+class ProximalAdagrad(mx.optimizer.Optimizer):
+    """A Proximal Adagrad optimizer.
+
+    Standard updates as for Adagrad are applied.
+
+    Then a proximal operator is executed.
+
+    For details of the update algorithm see
+    :class:`~mxnet.ndarray.proximal_adagrad_update`.
+
+    This optimizer accepts the following parameters in addition to those
+    accepted by :class:`.Optimizer`.
+
+    Parameters
+    ----------
+    l2_regularization_strength : float
+       Strength of L2 regularization.
+    lazy_update : bool, optional
+       Default is True. If True, lazy updates are applied \
+       if the storage types of weight and grad are both ``row_sparse``.
+
+    """
+
+    def __init__(self, l2_regularization_strength=0.0, lazy_update=True,
+                 float_stable_epsilon=1e-5, bisection_epsilon=1e-3, **kwargs):
+        super(ProximalAdagrad, self).__init__(**kwargs)
+        self.l2_regularization_strength = l2_regularization_strength
+        self.lazy_update = lazy_update
+        self.float_stable_eps = float_stable_epsilon
+        self.bisection_eps = bisection_epsilon
+
+    def create_state(self, index, weight):
+        history = zeros(weight.shape, weight.context)  # default stype
+        last_update_buffer = None
+        if self.l2_regularization_strength != 0.0:
+            last_update_buffer = full((weight.shape[0], ), self.num_update,
+                                      weight.context)
+        return [history, last_update_buffer]
+
+    def _update_impl(self, index, weight, grad, state):
+        assert (isinstance(weight, NDArray))
+        assert (isinstance(grad, NDArray))
+        self._update_count(index)
+        lr = self._get_lr(index)
+        wd = self._get_wd(index)
+        assert wd == 0
+        assert self.clip_gradient is None
+
+        is_sparse = weight.stype == 'row_sparse' and grad.stype == 'row_sparse'
+        history = state[0]
+        last_update_buffer = state[1]
+        if last_update_buffer is not None:
+            proximal_adagrad_update(
+                weight, grad, history, out=weight,
+                last_update_buffer=last_update_buffer,
+                lazy_update=self.lazy_update, lr=lr,
+                current_update=self.num_update,
+                l2_regularization_strength=self.l2_regularization_strength,
+                rescale_grad=self.rescale_grad,
+                float_stable_epsilon=self.float_stable_eps,
+                bisection_epsilon=self.bisection_eps)
+        elif is_sparse:
+            sparse.adagrad_update(weight, grad, history, out=weight, lr=lr,
+                                  wd=wd, rescale_grad=self.rescale_grad,
+                                  epsilon=self.float_stable_eps)
+        else:
+            grad = grad * self.rescale_grad
+            if self.clip_gradient is not None:
+                grad = clip(grad, -self.clip_gradient, self.clip_gradient)
+            history[:] += square(grad)
+            div = grad / sqrt(history + self.float_stable_eps)
+            weight[:] += (div + weight * wd) * -lr
 
     def update(self, index, weight, grad, state):
         self._update_impl(index, weight, grad, state)
