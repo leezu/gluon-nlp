@@ -276,19 +276,23 @@ class ProximalAdagrad(mx.optimizer.Optimizer):
     """
 
     def __init__(self, l2_regularization_strength=0.0, lazy_update=True,
-                 float_stable_epsilon=1e-5, bisection_epsilon=1e-3, **kwargs):
+                 float_stable_epsilon=1e-5, bisection_epsilon=1e-3,
+                 initial_accumulator_value=0.1, **kwargs):
         super(ProximalAdagrad, self).__init__(**kwargs)
         self.l2_regularization_strength = l2_regularization_strength
         self.lazy_update = lazy_update
         self.float_stable_eps = float_stable_epsilon
         self.bisection_eps = bisection_epsilon
+        self.initial_accumulator_value = 0.1
 
     def create_state(self, index, weight):
-        history = zeros(weight.shape, weight.context)  # default stype
+        history = full(shape=weight.shape, val=self.initial_accumulator_value,
+                       ctx=weight.context)  # default stype
         last_update_buffer = None
         if self.l2_regularization_strength != 0.0:
-            last_update_buffer = full((weight.shape[0], ), self.num_update,
-                                      weight.context)
+            last_update_buffer = full(
+                shape=(weight.shape[0], ), val=self.num_update,
+                ctx=weight.context)
         return [history, last_update_buffer]
 
     def _update_impl(self, index, weight, grad, state):
