@@ -38,6 +38,11 @@ import utils
 
 
 def add_parameters(parser):
+    group = parser.add_argument_group('General optimization arguments')
+    group.add_argument('--clip-group-gradient-norm', type=float, default=1.0,
+                       help='Rescale gradients of groups '
+                       'so that their norm does not surpass this.')
+
     group = parser.add_argument_group('Word level optimization arguments')
     group.add_argument('--word-optimizer', type=str, default='proximaladagrad')
     group.add_argument('--word-lr', type=float, default=0.01,
@@ -87,9 +92,14 @@ def get_embedding_in_trainer(args, params, num_words):
         l2 = args.word_l2 * 1 / num_words
         logging.info('Setting l2 sparsity factor for words '
                      'to {}'.format(l2))
+        kwargs = dict(learning_rate=args.word_lr,
+                      l2_regularization_strength=l2)
+        if args.word_optimizer.lower() == 'proximalsgd':
+            kwargs = dict(
+                clip_group_gradient_norm=args.clip_group_gradient_norm,
+                **kwargs)
         optimizer = mx.optimizer.Optimizer.create_optimizer(
-            args.word_optimizer, learning_rate=args.word_lr,
-            l2_regularization_strength=l2)
+            args.word_optimizer, **kwargs)
     elif args.word_optimizer.lower() == 'sgd':
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.word_optimizer, learning_rate=args.word_lr)
@@ -129,10 +139,14 @@ def _get_sparse_subword_trainer(args, params, num_subword_units):
         l2 = args.subword_sparse_l2 * 1 / num_subword_units
         logging.info('Setting l2 sparsity factor for subwords '
                      'to {}'.format(l2))
+        kwargs = dict(learning_rate=args.subword_sparse_lr,
+                      l2_regularization_strength=l2)
+        if args.subword_sparse_optimizer.lower() == 'proximalsgd':
+            kwargs = dict(
+                clip_group_gradient_norm=args.clip_group_gradient_norm,
+                **kwargs)
         optimizer = mx.optimizer.Optimizer.create_optimizer(
-            args.subword_sparse_optimizer,
-            learning_rate=args.subword_sparse_lr,
-            l2_regularization_strength=l2)
+            args.subword_sparse_optimizer, **kwargs)
     elif args.subword_sparse_optimizer.lower() in ['sgd', 'adagrad']:
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.subword_sparse_optimizer,
@@ -206,24 +220,27 @@ class ProximalSGD(mx.optimizer.Optimizer):
 
     Parameters
     ----------
-    l2_regularization_strength : float
+    clip_group_gradient_norm : float, optional
+       Rescale gradients of each group so that their norm does not surpass
+       clip_group_gradient_norm
+    l2_regularization_strength : float, default 0.0
        Strength of L2 regularization.
     lazy_update : bool, optional
        Default is True. If True, lazy updates are applied \
        if the storage types of weight and grad are both ``row_sparse``.
+
     """
 
-    def __init__(self, l2_regularization_strength=0.0, lazy_update=True,
-                 **kwargs):
+    def __init__(self, clip_group_gradient_norm=None,
+                 l2_regularization_strength=0.0, lazy_update=True, **kwargs):
         super(ProximalSGD, self).__init__(**kwargs)
+        self.clip_group_gradient_norm = clip_group_gradient_norm
         self.l2_regularization_strength = l2_regularization_strength
         self.lazy_update = lazy_update
 
     def create_state(self, index, weight):
-        last_update_buffer = None
-        if self.l2_regularization_strength != 0.0:
-            last_update_buffer = full((weight.shape[0], ), self.num_update,
-                                      weight.context)
+        last_update_buffer = full((weight.shape[0], ), self.num_update,
+                                  weight.context)
         return last_update_buffer
 
     def _update_impl(self, index, weight, grad, state):
@@ -233,18 +250,18 @@ class ProximalSGD(mx.optimizer.Optimizer):
         lr = self._get_lr(index)
         wd = self._get_wd(index)
         assert wd == 0
-        assert self.clip_gradient is None
 
-        kwargs = {'rescale_grad': self.rescale_grad}
+        kwargs = dict(
+            rescale_grad=self.rescale_grad, lr=lr,
+            l2_regularization_strength=self.l2_regularization_strength)
+        if self.clip_gradient:
+            kwargs['clip_gradient'] = self.clip_gradient
+        if self.clip_group_gradient_norm:
+            kwargs['clip_group_gradient_norm'] = self.clip_group_gradient_norm
 
-        if state is not None:
-            proximal_sgd_update(
-                weight, grad, out=weight, lazy_update=self.lazy_update, lr=lr,
-                last_update_buffer=state, current_update=self.num_update,
-                sparsity=self.l2_regularization_strength)
-        else:
-            sgd_update(weight, grad, out=weight, lazy_update=self.lazy_update,
-                       lr=lr, **kwargs)
+        proximal_sgd_update(
+            weight, grad, out=weight, lazy_update=self.lazy_update,
+            last_update_buffer=state, current_update=self.num_update, **kwargs)
 
     def update(self, index, weight, grad, state):
         self._update_impl(index, weight, grad, state)

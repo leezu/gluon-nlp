@@ -475,7 +475,7 @@ def train(args):
                         args.normalize_loss))
                     sys.exit(1)
 
-                loss =  normalized_task_loss + aux_loss + \
+                loss = normalized_task_loss + aux_loss + \
                     attention_regularization
 
             loss.backward()
