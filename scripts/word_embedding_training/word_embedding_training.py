@@ -56,7 +56,7 @@ def log(args, sw, embedding_in, embedding_out, subword_net, embedding_net,
         sw.add_histogram(tag='embedding_in_norm', values=embedding_in_norm,
                          global_step=num_update, bins=200)
         embedding_in_grad_norm = embedding_in.weight.grad(
-            ctx=context[0]).as_in_context(
+            ctx=context[0]).data.as_in_context(
                 mx.cpu()).tostype("default").norm(axis=1)
         sw.add_histogram(tag='embedding_in_grad_norm',
                          values=embedding_in_grad_norm, global_step=num_update,
@@ -67,7 +67,7 @@ def log(args, sw, embedding_in, embedding_out, subword_net, embedding_net,
             sw.add_histogram(tag='embedding_in', values=embedding_in_data,
                              global_step=num_update, bins=200)
             embedding_in_grad = embedding_in.weight.grad(
-                ctx=context[0]).as_in_context(mx.cpu()).tostype("default")
+                ctx=context[0]).data.as_in_context(mx.cpu()).tostype("default")
             sw.add_histogram(tag='embedding_in_grad', values=embedding_in_grad,
                              global_step=num_update, bins=200)
     # Learning rate
@@ -94,7 +94,7 @@ def log(args, sw, embedding_in, embedding_out, subword_net, embedding_net,
                              values=subword_embedding_norm,
                              global_step=num_update, bins=200)
             subword_embedding_grad_norm = embedding_in.weight.grad(
-                ctx=context[0]).as_in_context(
+                ctx=context[0]).data.as_in_context(
                     mx.cpu()).tostype("default").norm(axis=1)
             sw.add_histogram(tag='subword_embedding_grad_norm',
                              values=subword_embedding_grad_norm,
@@ -135,7 +135,7 @@ def log(args, sw, embedding_in, embedding_out, subword_net, embedding_net,
         sw.add_histogram(tag='embedding_out_norm', values=embedding_out_norm,
                          global_step=num_update, bins=200)
         embedding_out_grad_norm = embedding_out.weight.grad(
-            ctx=context[0]).as_in_context(
+            ctx=context[0]).data.as_in_context(
                 mx.cpu()).tostype("default").norm(axis=1)
         sw.add_histogram(tag='embedding_out_grad_norm',
                          values=embedding_out_grad_norm,
@@ -146,7 +146,7 @@ def log(args, sw, embedding_in, embedding_out, subword_net, embedding_net,
             sw.add_histogram(tag='embedding_out', values=embedding_out_data,
                              global_step=num_update, bins=200)
             embedding_out_grad = embedding_out.weight.grad(
-                ctx=context[0]).as_in_context(mx.cpu()).tostype("default")
+                ctx=context[0]).data.as_in_context(mx.cpu()).tostype("default")
             sw.add_histogram(tag='embedding_out_grad',
                              values=embedding_out_grad, global_step=num_update,
                              bins=200)
