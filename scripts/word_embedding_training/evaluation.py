@@ -23,6 +23,7 @@ This example shows how to train word embeddings.
 
 """
 
+import math
 import itertools
 import os
 
@@ -32,6 +33,9 @@ from scipy import stats
 
 import gluonnlp as nlp
 import utils
+
+QUANTILES = (0.1, 0.5)
+MIN_SAMPLES = 10
 
 
 def add_parameters(parser):
@@ -229,7 +233,7 @@ def _filter_similarity_dataset(token_to_idx, dataset):
 def evaluate_similarity(args, vocab, subword_vocab, embedding_in, subword_net,
                         embedding_net, dataset_name, dataset_kwargs,
                         similarity_function='CosineSimilarity',
-                        mxboard_summary_writer=None):
+                        mxboard_summary_writer=None, eps=1E-5):
     """Evaluation on similarity task."""
     dataset = nlp.data.create(dataset_name, **dataset_kwargs)
     dataset_name_wkwargs = dataset_name + ','.join(
@@ -280,8 +284,54 @@ def evaluate_similarity(args, vocab, subword_vocab, embedding_in, subword_net,
         mx.nd.array(words1, ctx=context[0]), mx.nd.array(
             words2, ctx=context[0]))
 
-    sr = stats.spearmanr(pred_similarity.asnumpy(), np.array(scores))
-    return sr.correlation, share_dropped
+    result_dict = {}
+
+    # Evaluation on complete dataset (minus OOV)
+    pred_similarity = pred_similarity.asnumpy()
+    scores = np.array(scores)
+    sr = stats.spearmanr(pred_similarity, scores)
+    result_dict['all_sr'] = sr.correlation
+    result_dict['all_num'] = len(scores)
+
+    # Frequency binned based evaluation
+    # Compute the indices that correspond to designate the bin boundaries
+    dataset_vocab_coded = np.stack([  # Code with 'real' idx for binning.
+        np.array([vocab.token_to_idx[d[0]], vocab.token_to_idx[d[1]]])
+        if (d[0] in vocab and d[1] in vocab) \
+        else np.array([len(vocab), len(vocab)])
+        # Invalid index (len(vocab)) for OOV words
+        for d in dataset
+    ])
+    bin_boundaries = np.array([math.ceil(len(vocab) * q) for q in QUANTILES])
+    bins = np.searchsorted(bin_boundaries, dataset_vocab_coded).max(axis=1)
+
+    for i in range(np.max(bins) + 1):
+        bin_indices = np.where(bins == i)[0]
+        # Assert sufficiently many items are in this bin
+        if len(bin_indices) < MIN_SAMPLES:
+            continue
+        sr = stats.spearmanr(pred_similarity[bin_indices], scores[bin_indices])
+        result_dict['bin_{}_sr'.format(i)] = sr.correlation
+        result_dict['bin_{}_num'.format(i)] = len(bin_indices)
+
+    # Subword only based evaluation
+    # All pairs for which at least one is OOV, are subword only
+    context = utils.get_context(args)
+    oov_indices = np.where(dataset_vocab_coded.max(axis=1) == len(vocab))[0]
+    noov_indices = np.where(dataset_vocab_coded.max(axis=1) != len(vocab))[0]
+    token_idx_to_vec = embedding_in.weight.data(ctx=context[0]).as_in_context(
+        mx.cpu()).tostype('default')
+    embedding_norm = mx.nd.norm(token_idx_to_vec, axis=1).asnumpy()
+    zero_indices = noov_indices[np.where(
+        embedding_norm[noov_indices] < eps)[0]]
+    zero_indices = np.concatenate([zero_indices, oov_indices], axis=0)
+    if len(zero_indices) >= MIN_SAMPLES:
+        sr = stats.spearmanr(pred_similarity[zero_indices],
+                             scores[zero_indices])
+        result_dict['zeroword_sr'.format(i)] = sr.correlation
+        result_dict['zeroword_num'.format(i)] = len(zero_indices)
+
+    return result_dict, share_dropped
 
 
 def evaluate_num_zero_rows(args, embedding_in, subword_net, vocab,
@@ -330,14 +380,22 @@ def evaluate(args, embedding_in, subword_net, embedding_net, vocab,
         for key_values in itertools.product(*parameters.values()):
             dataset_kwargs = dict(zip(parameters.keys(), key_values))
             for similarity_function in args.similarity_functions:
-                result, share_dropped = evaluate_similarity(
+                similarity_result_dict, share_dropped = evaluate_similarity(
                     args, vocab, subword_vocab, embedding_in, subword_net,
                     embedding_net, dataset_name, dataset_kwargs,
                     similarity_function, mxboard_summary_writer)
                 dataset_name_wkwargs = dataset_name + ','.join(
                     "{!s}={!r}".format(k, v)
                     for (k, v) in dataset_kwargs.items())
-                eval_dict['similarity-sr-' + dataset_name_wkwargs] = result
+
+                for k, v in similarity_result_dict.items():
+                    if k == 'all_sr':
+                        new_key = 'similarity-sr-' + dataset_name_wkwargs
+                    else:
+                        new_key = 'similarity-sr-' + dataset_name_wkwargs + \
+                            '-' + k
+                    eval_dict[new_key] = v
+
                 eval_dict['similarity-sharedropped--'
                           + dataset_name_wkwargs] = share_dropped
 
