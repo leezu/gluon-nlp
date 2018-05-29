@@ -136,13 +136,29 @@ def load_and_evaluate(args):
     eval_dict = evaluation.evaluate(args, embedding_in, subword_net, None,
                                     vocab, subword_vocab, sw)
     for k, v in eval_dict.items():
-        for i in range(100):
-            sw.add_scalar(tag=k, value=float(v), global_step=i)
-            word_embedding_training.log(args, sw, embedding_in, None,
-                                        subword_net, None, None, 0, 0, 0, 0, 0,
-                                        None, i, vocab, subword_vocab)
-    for k, v in eval_dict.items():
         print('{:.2f}'.format(v), '\t', k)
+        for i in range(2):
+            sw.add_scalar(tag=k, value=float(v), global_step=i)
+
+    for i in range(2):
+        word_embedding_training.log(
+            args=args,
+            sw=sw,
+            embedding_in=embedding_in,
+            embedding_out=None,
+            subword_net=subword_net,
+            embedding_net=None,
+            auxilary_task_net=None,
+            loss=0,
+            task_loss=0,
+            aux_loss=0,
+            aux_acc=0,
+            attention_regularization=0,
+            subword_embeddings=None,
+            num_update=i,
+            vocab=vocab,
+            subword_vocab=subword_vocab,
+        )
 
 
 if __name__ == '__main__':
