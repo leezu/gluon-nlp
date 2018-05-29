@@ -39,6 +39,8 @@ import model
 import utils
 import trainer
 
+eps = 1E-5
+
 
 ###############################################################################
 # Training code
@@ -61,6 +63,13 @@ def log(args, sw, embedding_in, embedding_out, subword_net, embedding_net,
         sw.add_histogram(tag='embedding_in_grad_norm',
                          values=embedding_in_grad_norm, global_step=num_update,
                          bins=200)
+
+        zero_indices = np.where((embedding_in_norm < eps).asnumpy())[0]
+        if len(zero_indices):
+            sw.add_histogram(tag='embedding_in_zero_vector_indices',
+                             values=zero_indices, global_step=num_update,
+                             bins=200)
+
         if args.extensive_mxboard:
             embedding_in_data = embedding_in.weight.data(
                 ctx=context[0]).as_in_context(mx.cpu()).tostype("default")
@@ -99,6 +108,13 @@ def log(args, sw, embedding_in, embedding_out, subword_net, embedding_net,
             sw.add_histogram(tag='subword_embedding_grad_norm',
                              values=subword_embedding_grad_norm,
                              global_step=num_update, bins=200)
+
+            subword_zero_indices = np.where(
+                (subword_embedding_norm < eps).asnumpy())[0]
+            if len(subword_zero_indices):
+                sw.add_histogram(tag='subword_embedding_zero_vector_indices',
+                                 values=subword_zero_indices,
+                                 global_step=num_update, bins=200)
 
         # Log the embeddings predicted for this batch based on the subword
         # units
