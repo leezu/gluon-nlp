@@ -37,14 +37,36 @@ import data
 import gluonnlp as nlp
 
 
-###############################################################################
-# Hyperparameters
-###############################################################################
 def add_parameters(parser):
     group = parser.add_argument_group('Plotting (run plot.py)')
     group.add_argument('--plot-vocab', type=str, default='',
                        help='Path to vocab file.')
     group.add_argument('--plot-eval-words', type=str, default='')
+
+
+def make_plot(vocab, observed_words, name, subsample=None):
+    print('Creating word frequency plot and distplot of evaluation words.')
+    counts = np.array(vocab.idx_to_counts)
+    count_df = pd.DataFrame(dict(word=vocab.idx_to_token, y=counts))
+
+    if subsample is None:
+        print('Observed ', len(observed_words), 'words. Drawing all')
+        a = observed_words
+    else:
+        print('Observed ', len(observed_words), 'words. Drawing ', subsample)
+        a = random.choices(observed_words, k=5000)
+
+    ax = count_df.y.plot()
+    ax = sns.distplot(a=a, ax=ax, hist=False, kde=False, rug=True)
+    ax.set(yscale="log")
+    ax.figure.savefig(f'{name}.png')
+    plt.close(ax.figure)
+
+    ax = count_df.y.plot()
+    ax = sns.distplot(a=a, ax=ax, hist=False, kde=False, rug=True)
+    ax.set(xscale="log", yscale="log")
+    ax.figure.savefig(f'loglog_{name}.png')
+    plt.close(ax.figure)
 
 
 if __name__ == '__main__':
@@ -96,6 +118,11 @@ if __name__ == '__main__':
                          stdv_word=statistics.stdev(dataset_idxs)))
 
                 print(dataset_stats[-1])
+                name = dataset_name + str(list(
+                    dataset_kwargs.values())[0]) if list(
+                        dataset_kwargs.values()) else dataset_name
+                make_plot(vocab, dataset_idxs, name)
+
     elif args.plot_eval_words.lower() == 'analogy':
         analogy_datasets = nlp.data.word_embedding_evaluation.\
             word_analogy_datasets
@@ -140,17 +167,4 @@ if __name__ == '__main__':
 
                 print(dataset_stats[-1])
 
-    print('Creating word frequency plot and distplot of evaluation words.')
-    counts = np.array(vocab.idx_to_counts)
-    count_df = pd.DataFrame(
-        dict(word=vocab.idx_to_token, y=counts, logy=np.log(counts)))
-
-    axes = count_df.logy.plot()
-    print('Observed ', len(observed_words), 'words. Drawing ',
-          5000)
-    axes = sns.distplot(
-        a=random.choices(observed_words,
-                         k=5000), ax=axes,
-        hist=False, kde=False, rug=True)
-
-    plt.savefig('figure.png')
+    make_plot(vocab, observed_words, 'all', subsample=5000)
