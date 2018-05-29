@@ -119,23 +119,30 @@ def get_model(args, train_dataset, vocab, subword_vocab):
             embedding_net = None
             auxilary_task_net = None
         else:
-            # RNN mode
+            # CNN / RNN mode
             subword_net = subword.create(name=args.subword_network, args=args,
                                          vocab_size=len(subword_vocab))
-            embedding_net = subword.create(name=args.embedding_network,
-                                           args=args)
-            embedding_net.initialize(mx.init.Orthogonal(), ctx=context)
 
-            if not args.dont_hybridize:
-                embedding_net.hybridize()
+            if 'rnn' in args.subword_network.lower():
+                embedding_net = subword.create(name=args.embedding_network,
+                                               args=args)
+                embedding_net.initialize(mx.init.Orthogonal(), ctx=context)
 
-            if args.auxilary_task:
-                auxilary_task_net = subword.create(
-                    name='WordPrediction', vocab_size=len(vocab), args=args)
-                auxilary_task_net.initialize(mx.init.Orthogonal(), ctx=context)
                 if not args.dont_hybridize:
-                    auxilary_task_net
+                    embedding_net.hybridize()
+
+                if args.auxilary_task:
+                    auxilary_task_net = subword.create(name='WordPrediction',
+                                                       vocab_size=len(vocab),
+                                                       args=args)
+                    auxilary_task_net.initialize(mx.init.Orthogonal(),
+                                                 ctx=context)
+                    if not args.dont_hybridize:
+                        auxilary_task_net
+                else:
+                    auxilary_task_net = None
             else:
+                embedding_net = None
                 auxilary_task_net = None
 
         subword_net.initialize(mx.init.Xavier(), ctx=context)

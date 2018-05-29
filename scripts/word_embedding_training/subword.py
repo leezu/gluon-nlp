@@ -43,6 +43,7 @@ def add_parameters(parser):
     _selfattention_args(parser)
     _last_output_args(parser)
     _subwordrnn_args(parser)
+    _subwordcnn_args(parser)
     _awdrnn_args(parser)
     _wordprediction_args(parser)
 
@@ -69,6 +70,13 @@ def _subwordrnn_args(parser):
     group.add_argument('--subwordrnn-encoder-dropout', type=float, default=0.0)
     group.add_argument('--subwordrnn-no-bidirectional', default=False,
                        action='store_true')
+
+
+def _subwordcnn_args(parser):
+    group = parser.add_argument_group('Subword Network: SubwordCNN')
+    group.add_argument('--subwordcnn-filter-sizes', type=int, nargs='+',
+                       default=[3, 4, 5])
+    group.add_argument('--subwordcnn-cnn-dropout', type=float, default=0.0)
 
 
 def _awdrnn_args(parser):
@@ -129,6 +137,15 @@ def create(name, args, **kwargs):
             num_layers=args.subwordrnn_num_layers,
             bidirectional=not args.subwordrnn_no_bidirectional,
             encoder_dropout=args.subwordrnn_encoder_dropout,
+            **kwargs,
+        )
+    elif name.lower() == 'subwordcnn':
+        kwargs = dict(
+            embed_size=args.subword_embedding_size,
+            embedding_dropout=args.subword_embedding_dropout,
+            output_size=args.emsize,
+            filter_sizes=args.subwordcnn_filter_sizes,
+            cnn_dropout=args.subwordcnn_cnn_dropout,
             **kwargs,
         )
     elif name.lower() == 'awdrnn':
@@ -448,16 +465,17 @@ class SubwordCNN(SubwordNetwork, gluon.HybridBlock):
 
     min_size = 5  # Minimum length, corresponds to largest filter size
 
-    def __init__(self, embed_size, output_size, vocab_size=256, **kwargs):
+    def __init__(self, embed_size, output_size, filter_sizes,
+                 embedding_dropout, cnn_dropout, vocab_size=256, **kwargs):
         super(SubwordCNN, self).__init__(**kwargs)
         self._embed_size = embed_size
         self._output_size = output_size
         self._vocab_size = vocab_size
 
         self.num_feature_maps = embed_size
-        self.filter_sizes = [5]
-        self.dropout_embedding = 0.3
-        self.dropout_cnn = 0.3
+        self.filter_sizes = filter_sizes
+        self.dropout_embedding = embedding_dropout
+        self.dropout_cnn = cnn_dropout
 
         with self.name_scope():
             self.embedding = self._get_embedding()
@@ -514,7 +532,7 @@ class SubwordCNN(SubwordNetwork, gluon.HybridBlock):
             output.add(gluon.nn.Dense(self._output_size, flatten=False))
         return output
 
-    def hybrid_forward(self, F, inputs, mask, begin_state=None):  # pylint: disable=arguments-differ
+    def hybrid_forward(self, F, inputs, mask):  # pylint: disable=arguments-differ
         """Defines the forward computation. Arguments can be either
         :py:class:`NDArray` or :py:class:`Symbol`."""
 
