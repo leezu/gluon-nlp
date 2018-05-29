@@ -57,12 +57,13 @@ def log(args, sw, embedding_in, embedding_out, subword_net, embedding_net,
                 mx.cpu()).tostype("default").norm(axis=1)
         sw.add_histogram(tag='embedding_in_norm', values=embedding_in_norm,
                          global_step=num_update, bins=200)
-        embedding_in_grad_norm = embedding_in.weight.grad(
-            ctx=context[0]).data.as_in_context(
-                mx.cpu()).tostype("default").norm(axis=1)
-        sw.add_histogram(tag='embedding_in_grad_norm',
-                         values=embedding_in_grad_norm, global_step=num_update,
-                         bins=200)
+        if embedding_in.weight.grad(ctx=context[0]).stype == 'row_sparse':
+            embedding_in_grad_norm = embedding_in.weight.grad(
+                ctx=context[0]).data.as_in_context(
+                    mx.cpu()).tostype("default").norm(axis=1)
+            sw.add_histogram(tag='embedding_in_grad_norm',
+                             values=embedding_in_grad_norm,
+                             global_step=num_update, bins=200)
 
         zero_indices = np.where((embedding_in_norm < eps).asnumpy())[0]
         if len(zero_indices):
@@ -75,10 +76,15 @@ def log(args, sw, embedding_in, embedding_out, subword_net, embedding_net,
                 ctx=context[0]).as_in_context(mx.cpu()).tostype("default")
             sw.add_histogram(tag='embedding_in', values=embedding_in_data,
                              global_step=num_update, bins=200)
-            embedding_in_grad = embedding_in.weight.grad(
-                ctx=context[0]).data.as_in_context(mx.cpu()).tostype("default")
-            sw.add_histogram(tag='embedding_in_grad', values=embedding_in_grad,
-                             global_step=num_update, bins=200)
+            if (embedding_in.weight.grad(ctx=context[0]).stype == 'row_sparse'
+                    and
+                    embedding_in.weight.grad(ctx=context[0]).data.shape[0]):
+                embedding_in_grad = embedding_in.weight.grad(
+                    ctx=context[0]).data.as_in_context(
+                        mx.cpu()).tostype("default")
+                sw.add_histogram(tag='embedding_in_grad',
+                                 values=embedding_in_grad,
+                                 global_step=num_update, bins=200)
     # Learning rate
     if subword_net is not None:
         if (args.extensive_mxboard or args.subword_network.lower() not in [
@@ -96,18 +102,22 @@ def log(args, sw, embedding_in, embedding_out, subword_net, embedding_net,
         if args.subword_network.lower() in [
                 'sumreduce', 'meanreduce', 'fasttext'
         ]:
-            subword_embedding_norm = embedding_in.weight.data(
+            subword_embedding_norm = subword_net.embedding.weight.data(
                 ctx=context[0]).as_in_context(
                     mx.cpu()).tostype("default").norm(axis=1)
             sw.add_histogram(tag='subword_embedding_norm',
                              values=subword_embedding_norm,
                              global_step=num_update, bins=200)
-            subword_embedding_grad_norm = embedding_in.weight.grad(
-                ctx=context[0]).data.as_in_context(
-                    mx.cpu()).tostype("default").norm(axis=1)
-            sw.add_histogram(tag='subword_embedding_grad_norm',
-                             values=subword_embedding_grad_norm,
-                             global_step=num_update, bins=200)
+            if (subword_net.embedding.weight.grad(
+                    ctx=context[0]).stype == 'row_sparse'
+                    and subword_net.embedding.weight.grad(
+                        ctx=context[0]).data.shape[0]):
+                subword_embedding_grad_norm = subword_net.embedding.weight.grad(
+                    ctx=context[0]).data.as_in_context(
+                        mx.cpu()).tostype("default").norm(axis=1)
+                sw.add_histogram(tag='subword_embedding_grad_norm',
+                                 values=subword_embedding_grad_norm,
+                                 global_step=num_update, bins=200)
 
             subword_zero_indices = np.where(
                 (subword_embedding_norm < eps).asnumpy())[0]
