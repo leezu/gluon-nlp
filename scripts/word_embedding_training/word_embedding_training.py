@@ -600,6 +600,21 @@ def train(args):
                 utils.save_params(args, embedding_in, embedding_out,
                                   subword_net, num_update)
 
+        # Log at the end of every epoch
+        with utils.print_time('mx.nd.waitall()'):
+            mx.nd.waitall()
+
+        log(args, sw, embedding_in, embedding_out, subword_net, embedding_net,
+            auxilary_task_net, loss, normalized_task_loss, aux_loss, aux_acc,
+            attention_regularization, subword_embeddings, num_update, vocab,
+            subword_vocab)
+        log_learning_rates(sw, num_update, embedding_in_trainer,
+                           embedding_out_trainer, subword_trainer)
+
+        # Save params after evaluation
+        utils.save_params(args, embedding_in, embedding_out, subword_net,
+                          num_update)
+
     sw.close()
 
 
