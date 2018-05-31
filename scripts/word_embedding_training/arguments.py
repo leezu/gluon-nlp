@@ -24,6 +24,8 @@ import os
 import sys
 import tempfile
 
+import mxnet as mx
+
 import plot
 import data
 import gluonnlp as nlp
@@ -65,6 +67,8 @@ def get_args(parameter_adders=None):
     group = parser.add_argument_group('Debugging arguments')
     group.add_argument('--debug', action='store_true',
                        help='Enable debug mode checks.')
+    group.add_argument('--profile', action='store_true',
+                       help='Enable profile.')
 
     # Deprecated arguments
     group.add_argument('--normalize-loss', type=str, default='none',
@@ -90,6 +94,11 @@ def get_args(parameter_adders=None):
             f(parser)
 
     args = parser.parse_args()
+
+    if args.profile:
+        mx.profiler.set_config(profile_all=True,
+                               filename='profile_output.json')
+        mx.profiler.set_state('run')
 
     return args
 
