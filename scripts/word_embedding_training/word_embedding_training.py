@@ -514,11 +514,11 @@ def train(args):
                 if args.subword_network.lower() in \
                    ['sumreduce', 'meanreduce', 'fasttext'] \
                    and 'adagrad' not in args.subword_sparse_optimizer:
-                    subword_trainer.set_learning_rate(args.subword_sparse_lr *
-                                                      (1 - progress))
+                    subword_trainer.set_learning_rate(
+                        max(eps, args.subword_sparse_lr * (1 - progress)))
                 elif 'adagrad' not in args.subword_dense_optimizer:
-                    subword_trainer.set_learning_rate(args.subword_dense_lr *
-                                                      (1 - progress))
+                    subword_trainer.set_learning_rate(
+                        max(eps, args.subword_dense_lr * (1 - progress)))
                 if args.normalize_gradient.lower() in ['count', 'l2']:
                     assert args.subword_network.lower() in \
                         ['sumreduce', 'meanreduce', 'fasttext'], \
@@ -548,7 +548,7 @@ def train(args):
             if embedding_in is not None:
                 if 'adagrad' not in args.word_optimizer:
                     embedding_in_trainer.set_learning_rate(
-                        args.word_lr * (1 - progress))
+                        max(eps, args.word_lr * (1 - progress)))
                 # Force eager update before evaluation
                 if i % args.eval_interval == 0:
                     embedding_in_trainer.lazy_update = False
@@ -570,7 +570,7 @@ def train(args):
 
             if 'adagrad' not in args.word_optimizer:
                 embedding_out_trainer.set_learning_rate(
-                    args.word_lr * (1 - progress))
+                    max(eps, args.word_lr * (1 - progress)))
             if args.normalize_gradient.lower() in ['count', 'l2']:
                 trainer.normalize_sparse_grads(args, embedding_out,
                                                unique_targets_counts,
