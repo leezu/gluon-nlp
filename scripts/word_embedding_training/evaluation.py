@@ -248,6 +248,7 @@ def evaluate_similarity(args, vocab, subword_vocab, embedding_in, subword_net,
         token_to_idx, idx_to_vec = construct_vocab_embedding_for_dataset(
             args, tokens, vocab, embedding_in, subword_vocab, subword_net,
             embedding_net)
+        mx.nd.waitall()
     dataset, share_dropped = _filter_similarity_dataset(token_to_idx, dataset)
 
     if not dataset:
