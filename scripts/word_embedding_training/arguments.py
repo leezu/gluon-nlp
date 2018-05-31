@@ -24,6 +24,7 @@ import os
 import sys
 import tempfile
 
+import configargparse
 import mxnet as mx
 
 import plot
@@ -38,9 +39,13 @@ import evaluation
 
 def get_args(parameter_adders=None):
     """Construct the argument parser."""
-    parser = argparse.ArgumentParser(
+    parser = configargparse.init_argument_parser(
         description='Word embedding training with Gluon.',
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        default_config_files=['~/.gluonnlp_embeddings_training_config'])
+    parser = configargparse.get_argument_parser()
+
+    parser.add_argument('--config', is_config_file=True, help='Config file.')
 
     # Computation options
     group = parser.add_argument_group('Computation arguments')
@@ -136,8 +141,12 @@ def setup_logging(args):
     elif os.path.isfile(args.logdir):
         raise RuntimeError('{} is a file.'.format(args.logdir))
 
+    # Serialize arguments
     with open(os.path.join(args.logdir, 'args'), 'w') as f:
         print(args, file=f)
+    configoutput = os.path.join(args.logdir, 'args.config')
+    p = configargparse.get_argument_parser()
+    p.write_config_file(args, [configoutput])
 
     logging.info('Logging to {}'.format(args.logdir))
 

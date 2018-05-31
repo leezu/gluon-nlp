@@ -65,6 +65,7 @@ setup(
             'pandas',
             'numba',
             'seaborn',
+            'ConfigArgParse',
         ],
         'dev': [
             'pytest',
