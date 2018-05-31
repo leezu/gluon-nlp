@@ -32,6 +32,8 @@ import utils
 
 def add_parameters(parser):
     group = parser.add_argument_group('Model arguments')
+    group.add_argument('--no-static-alloc', action='store_true',
+                       help='Don\'t use static memory allocation.')
     group.add_argument('--no-token-embedding', action='store_true',
                        help='Don\'t use any token embedding. '
                        'Only use subword units.')
@@ -77,31 +79,21 @@ def get_model(args, train_dataset, vocab, subword_vocab):
         embedding_out_initializer = embedding_initializer
 
     # Output embeddings
-    if not args.no_use_sparse_embedding:
-        embedding_out = gluon.nn.SparseEmbedding(
-            num_tokens, args.emsize,
-            weight_initializer=embedding_out_initializer)
-    else:
-        embedding_out = gluon.nn.Embedding(
-            num_tokens, args.emsize,
-            weight_initializer=embedding_out_initializer)
+    embedding_out = gluon.nn.Embedding(
+        num_tokens, args.emsize, weight_initializer=embedding_out_initializer,
+        sparse_grad=not args.no_use_sparse_embedding)
     embedding_out.initialize(ctx=embeddings_context)
     if not args.dont_hybridize:
-        embedding_out.hybridize()
+        embedding_out.hybridize(static_alloc=not args.no_static_alloc)
 
     # Word level input embeddings
     if not args.no_token_embedding:
-        if not args.no_use_sparse_embedding:
-            embedding_in = gluon.nn.SparseEmbedding(
-                num_tokens, args.emsize,
-                weight_initializer=embedding_initializer)
-        else:
-            embedding_in = gluon.nn.Embedding(
-                num_tokens, args.emsize,
-                weight_initializer=embedding_initializer)
+        embedding_in = gluon.nn.Embedding(
+            num_tokens, args.emsize, weight_initializer=embedding_initializer,
+            sparse_grad=not args.no_use_sparse_embedding)
         embedding_in.initialize(ctx=embeddings_context)
         if not args.dont_hybridize:
-            embedding_in.hybridize()
+            embedding_in.hybridize(static_alloc=not args.no_static_alloc)
     else:
         embedding_in = None
 
@@ -129,7 +121,8 @@ def get_model(args, train_dataset, vocab, subword_vocab):
                 embedding_net.initialize(mx.init.Orthogonal(), ctx=context)
 
                 if not args.dont_hybridize:
-                    embedding_net.hybridize()
+                    embedding_net.hybridize(
+                        static_alloc=not args.no_static_alloc)
 
                 if args.auxilary_task:
                     auxilary_task_net = subword.create(name='WordPrediction',
@@ -147,7 +140,7 @@ def get_model(args, train_dataset, vocab, subword_vocab):
 
         subword_net.initialize(mx.init.Xavier(), ctx=context)
         if not args.dont_hybridize:
-            subword_net.hybridize()
+            subword_net.hybridize(static_alloc=not args.no_static_alloc)
     else:
         subword_net = None
         embedding_net = None

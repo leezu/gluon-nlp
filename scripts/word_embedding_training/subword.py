@@ -260,14 +260,10 @@ class SumReduce(SubwordNetwork, gluon.HybridBlock):
                     axis=-2))
 
     def _get_embedding(self):
-        if self.sparse_embedding:
-            embedding = gluon.nn.SparseEmbedding(
-                self.vocab_size, self.embed_size,
-                weight_initializer=self.embedding_initializer)
-        else:
-            embedding = gluon.nn.Embedding(
-                self.vocab_size, self.embed_size,
-                weight_initializer=self.embedding_initializer)
+        embedding = gluon.nn.Embedding(
+            self.vocab_size, self.embed_size,
+            weight_initializer=self.embedding_initializer,
+            sparse_grad=self.sparse_embedding)
         return embedding
 
     def hybrid_forward(self, F, inputs, mask, begin_state=None):
@@ -302,14 +298,10 @@ class MeanReduce(SubwordNetwork, gluon.HybridBlock):
                     axis=-2))
 
     def _get_embedding(self):
-        if self.sparse_embedding:
-            embedding = gluon.nn.SparseEmbedding(
-                self.vocab_size, self.embed_size,
-                weight_initializer=self.embedding_initializer)
-        else:
-            embedding = gluon.nn.Embedding(
-                self.vocab_size, self.embed_size,
-                weight_initializer=self.embedding_initializer)
+        embedding = gluon.nn.Embedding(
+            self.vocab_size, self.embed_size,
+            weight_initializer=self.embedding_initializer,
+            sparse_grad=self.sparse_embedding)
         return embedding
 
     def hybrid_forward(self, F, inputs, mask, begin_state=None):
