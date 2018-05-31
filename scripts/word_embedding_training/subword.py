@@ -463,7 +463,7 @@ class SubwordCNN(SubwordNetwork, gluon.HybridBlock):
         number of distinct bytes.
     """
 
-    min_size = 5  # Minimum length, corresponds to largest filter size
+    min_size = None  # Minimum length, corresponds to largest filter size
 
     def __init__(self, embed_size, output_size, filter_sizes,
                  embedding_dropout, cnn_dropout, vocab_size=256, **kwargs):
@@ -471,6 +471,8 @@ class SubwordCNN(SubwordNetwork, gluon.HybridBlock):
         self._embed_size = embed_size
         self._output_size = output_size
         self._vocab_size = vocab_size
+
+        self.min_size = max(filter_sizes)
 
         self.num_feature_maps = embed_size
         self.filter_sizes = filter_sizes
