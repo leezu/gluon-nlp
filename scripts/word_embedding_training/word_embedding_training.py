@@ -88,7 +88,7 @@ def log(args, sw, embedding_in, embedding_out, subword_net, embedding_net,
     # Learning rate
     if subword_net is not None:
         if (args.extensive_mxboard or args.subword_network.lower() not in [
-                'sumreduce', 'meanreduce', 'fasttext'
+                'sumreduce', 'meanreduce', 'fasttext', 'vdcnn'
         ]):
             for k, v in subword_net.collect_params().items():
                 sw.add_histogram(tag=k, values=v.data(ctx=context[0]),
@@ -397,6 +397,7 @@ def train(args):
 
     indices = np.arange(len(train_dataset))
     num_update = 0
+
     for epoch in range(args.epochs):
         np.random.shuffle(indices)
         with utils.print_time('create batch indices'):
@@ -411,6 +412,8 @@ def train(args):
             num_update += len(batch_idx)
             if 'rnn' in args.subword_network.lower():
                 mx.nd.waitall()  # wait to avoid cudnn memory related crashes
+            if 'cnn' in args.subword_network.lower() and i % 10 == 0:
+                mx.nd.waitall()  # don't push too fast
 
             progress = (epoch * len(batches) + i) / (
                 args.epochs * len(batches))

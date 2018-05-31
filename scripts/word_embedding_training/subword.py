@@ -28,6 +28,7 @@ from mxnet import gluon
 
 import gluonnlp as nlp
 import self_attention
+from blocks import VDCNN
 
 
 ###############################################################################
@@ -35,7 +36,7 @@ import self_attention
 ###############################################################################
 def add_parameters(parser):
     group = parser.add_argument_group('Subword networks')
-    group.add_argument('--subword-embedding-size', type=int, default=20,
+    group.add_argument('--subword-embedding-size', type=int, default=16,
                        help='Embedding size for each subword piece.')
     group.add_argument('--subword-embedding-dropout', type=float, default=0.0,
                        help='Embedding size for each subword piece.')
@@ -44,6 +45,7 @@ def add_parameters(parser):
     _last_output_args(parser)
     _subwordrnn_args(parser)
     _subwordcnn_args(parser)
+    _subwordvdcnn_args(parser)
     _awdrnn_args(parser)
     _wordprediction_args(parser)
 
@@ -72,13 +74,6 @@ def _subwordrnn_args(parser):
                        action='store_true')
 
 
-def _subwordcnn_args(parser):
-    group = parser.add_argument_group('Subword Network: SubwordCNN')
-    group.add_argument('--subwordcnn-filter-sizes', type=int, nargs='+',
-                       default=[3, 4, 5])
-    group.add_argument('--subwordcnn-cnn-dropout', type=float, default=0.0)
-
-
 def _awdrnn_args(parser):
     group = parser.add_argument_group('Subword Network: AWDRNN')
     group.add_argument('--awdrnn-path', type=str, default='model.params',
@@ -90,6 +85,19 @@ def _awdrnn_args(parser):
                        help='number of hidden units per layer')
     group.add_argument('--awdrnn-nlayers', type=int, default=3,
                        help='number of layers')
+
+
+def _subwordcnn_args(parser):
+    group = parser.add_argument_group('Subword Network: SubwordCNN')
+    group.add_argument('--subwordcnn-filter-sizes', type=int, nargs='+',
+                       default=[3, 4, 5])
+    group.add_argument('--subwordcnn-cnn-dropout', type=float, default=0.0)
+
+
+def _subwordvdcnn_args(parser):
+    group = parser.add_argument_group('Subword Network: SubwordVDCNN')
+    group.add_argument('--subwordvdcnn-depth', type=int, default=9)
+    group.add_argument('--subwordvdcnn-no-batch-norm', action='store_true')
 
 
 def _wordprediction_args(parser):
@@ -146,6 +154,15 @@ def create(name, args, **kwargs):
             output_size=args.emsize,
             filter_sizes=args.subwordcnn_filter_sizes,
             cnn_dropout=args.subwordcnn_cnn_dropout,
+            **kwargs,
+        )
+    elif name.lower() == 'subwordvdcnn':
+        kwargs = dict(
+            embed_size=args.subword_embedding_size,
+            embedding_dropout=args.subword_embedding_dropout,
+            output_size=args.emsize,
+            depth=args.subwordvdcnn_depth,
+            temporal_batchnorm=not args.subwordvdcnn_no_batch_norm,
             **kwargs,
         )
     elif name.lower() == 'awdrnn':
@@ -466,7 +483,7 @@ class SubwordCNN(SubwordNetwork, gluon.HybridBlock):
     min_size = None  # Minimum length, corresponds to largest filter size
 
     def __init__(self, embed_size, output_size, filter_sizes,
-                 embedding_dropout, cnn_dropout, vocab_size=256, **kwargs):
+                 embedding_dropout, cnn_dropout, vocab_size, **kwargs):
         super(SubwordCNN, self).__init__(**kwargs)
         self._embed_size = embed_size
         self._output_size = output_size
@@ -546,6 +563,11 @@ class SubwordCNN(SubwordNetwork, gluon.HybridBlock):
         encoded = self.encoder(embeddings_masked)
         out = self.decoder(encoded)
         return out
+
+
+@register
+class SubwordVDCNN(SubwordNetwork, VDCNN):
+    min_size = 8
 
 
 ###############################################################################
