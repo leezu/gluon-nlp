@@ -951,6 +951,6 @@ def test_subword_function_ngramhashes():
                                            num_subwords=1000)
 
     assert [8.0, 195.0, 271.0, 500.0, 201.0, 445.0, 379.0, 831.0, 617.0, 851.0] == \
-        sf([u'test'])[0].asnumpy().tolist()
+        sf(['test'])[0].asnumpy().tolist()
     assert [253.0, 801.0, 557.0, 966.0, 63.0, 874.0, 313.0, 188.0, 588.0, 86.0] == \
-        sf([u'τεστ'])[0].asnumpy().tolist()
+        sf(['τεστ'])[0].asnumpy().tolist()
