@@ -88,6 +88,7 @@ def parse_args():
     group = parser.add_argument_group('Optimization arguments')
     group.add_argument('--optimizer', type=str, default='adagrad')
     group.add_argument('--lr', type=float, default=0.05)
+    group.add_argument('--no-lr-policy', action='store_true')
 
     # Logging
     group = parser.add_argument_group('Logging arguments')
@@ -260,7 +261,7 @@ def train(args):
 
             loss.backward()
 
-            if args.optimizer != 'adagrad':
+            if args.optimizer != 'adagrad' and not args.no_lr_policy:
                 trainer.set_learning_rate(args.lr * (1 - progress))
             trainer.step(batch_size=1)
 

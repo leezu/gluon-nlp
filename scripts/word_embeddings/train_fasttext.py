@@ -94,8 +94,10 @@ def parse_args():
     group = parser.add_argument_group('Optimization arguments')
     group.add_argument('--optimizer', type=str, default='adagrad')
     group.add_argument('--lr', type=float, default=0.05)
+    group.add_argument('--no-lr-policy', action='store_true')
     group.add_argument('--optimizer-subwords', type=str, default='adagrad')
     group.add_argument('--lr-subwords', type=float, default=0.01)
+    group.add_argument('--no-lr-subwords-policy', action='store_true')
     group.add_argument(
         '--groupwise-clip-gradient', type=float, default=-11,
         help='Clip embedding matrix gradients '
@@ -352,9 +354,12 @@ def train(args):
 
             loss.backward()
 
-            if args.optimizer.lower() not in ['adagrad', 'adam']:
+            if args.optimizer.lower() not in ['adagrad', 'adam'
+                                              ] and not args.no_lr_policy:
                 trainer.set_learning_rate(args.lr * (1 - progress))
-            if args.optimizer_subwords.lower() not in ['adagrad', 'adam']:
+            if args.optimizer_subwords.lower() not in [
+                    'adagrad', 'adam'
+            ] and not args.no_lr_subwords_policy:
                 trainer_subwords.set_learning_rate(args.lr * (1 - progress))
 
             # Normalize gradients
