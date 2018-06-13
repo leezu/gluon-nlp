@@ -47,6 +47,8 @@ import evaluation
 import gluonnlp as nlp
 from utils import get_context, print_time, prune_sentences
 
+from utils import clip_embeddings_gradients
+
 
 ###############################################################################
 # Utils
@@ -94,6 +96,18 @@ def parse_args():
     group.add_argument('--lr', type=float, default=0.05)
     group.add_argument('--optimizer-subwords', type=str, default='adagrad')
     group.add_argument('--lr-subwords', type=float, default=0.01)
+    group.add_argument(
+        '--groupwise-clip-gradient', type=float, default=-11,
+        help='Clip embedding matrix gradients '
+        'such that the norm of the gradient for one embedding vector '
+        'does not surpass --groupwise-clip-gradient.'
+        'Disable by setting to a value <= 0.')
+    group.add_argument(
+        '--groupwise-subwords-clip-gradient', type=float, default=-11,
+        help='Clip embedding matrix gradients '
+        'such that the norm of the gradient for one embedding vector '
+        'does not surpass --groupwise-clip-gradient.'
+        'Disable by setting to a value <= 0.')
 
     # Logging
     group = parser.add_argument_group('Logging arguments')
@@ -342,6 +356,16 @@ def train(args):
                 trainer.set_learning_rate(args.lr * (1 - progress))
             if args.optimizer_subwords.lower() not in ['adagrad', 'adam']:
                 trainer_subwords.set_learning_rate(args.lr * (1 - progress))
+
+            # Normalize gradients
+            if args.groupwise_clip_gradient > 0:
+                clip_embeddings_gradients(trainer._params,
+                                          args.groupwise_clip_gradient)
+            if args.groupwise_subwords_clip_gradient > 0:
+                clip_embeddings_gradients(
+                    trainer_subwords._params,
+                    args.groupwise_subwords_clip_gradient)
+
             trainer.step(batch_size=1)
             trainer_subwords.step(batch_size=1)
 
