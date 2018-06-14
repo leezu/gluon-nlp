@@ -99,17 +99,19 @@ def parse_args():
     group.add_argument('--lr-subwords', type=float, default=0.01)
     group.add_argument('--no-lr-subwords-policy', action='store_true')
     group.add_argument(
-        '--groupwise-clip-gradient', type=float, default=-11,
+        '--groupwise-clip-gradient', type=float, default=-1,
         help='Clip embedding matrix gradients '
         'such that the norm of the gradient for one embedding vector '
         'does not surpass --groupwise-clip-gradient.'
         'Disable by setting to a value <= 0.')
     group.add_argument(
-        '--groupwise-subwords-clip-gradient', type=float, default=-11,
+        '--groupwise-subwords-clip-gradient', type=float, default=-1,
         help='Clip embedding matrix gradients '
         'such that the norm of the gradient for one embedding vector '
         'does not surpass --groupwise-clip-gradient.'
         'Disable by setting to a value <= 0.')
+    group.add_argument('--norm-by-counts', action='store_true')
+    group.add_argument('--norm-by-log-counts', action='store_true')
 
     # Logging
     group = parser.add_argument_group('Logging arguments')
@@ -281,6 +283,9 @@ def train(args):
                 smoothing=1, dynamic_ncols=True):
             progress = (epoch * num_batches + i) / (args.epochs * num_batches)
             (center, word_context, word_context_mask) = batch
+            negatives = negatives_sampler(word_context.shape + (args.negative, )) \
+                .reshape((word_context.shape[0],
+                          word_context.shape[1] * args.negative))
 
             if args.model.lower() == 'skipgram':
                 subwords, subwords_mask = \
@@ -294,6 +299,30 @@ def train(args):
                 sys.exit(1)
             num_update += len(center)
 
+            # Get counts for normalization
+            if args.norm_by_counts or args.norm_by_log_counts:
+                # embedding words
+                center_unique, center_unique_counts = np.unique(
+                    center.asnumpy(), return_counts=True)
+                # embedding subword grad
+                subwords_unique, subwords_unique_counts = np.unique(
+                    np.ma.array(subwords.asnumpy(),
+                                mask=subwords_mask.asnumpy() == 0),
+                    return_counts=True)
+                subwords_unique = subwords_unique[:-1].filled(np.nan)
+                subwords_unique_counts = subwords_unique_counts[:-1]
+                # embedding out grad
+                context_negatives_unique, context_negatives_unique_counts = \
+                    np.unique(np.ma.concatenate([
+                        np.ma.array(word_context.asnumpy(),
+                                    mask=word_context_mask.asnumpy() == 0),
+                        negatives.asnumpy()
+                    ], axis=1), return_counts=True)
+                context_negatives_unique = \
+                    context_negatives_unique[:-1].filled(np.nan)
+                context_negatives_unique_counts = \
+                    context_negatives_unique_counts[:-1]
+
             # To GPU
             mx.nd.waitall()  # waitall() until mxnet #11041 is merged
             center = center.as_in_context(context[0])
@@ -303,10 +332,40 @@ def train(args):
                 context[0])
             word_context = word_context.as_in_context(context[0])
             word_context_mask = word_context_mask.as_in_context(context[0])
-            negatives = negatives_sampler(word_context.shape + (args.negative, )) \
-                .reshape((word_context.shape[0],
-                          word_context.shape[1] * args.negative)) \
-                .as_in_context(context[0])
+            negatives = negatives.as_in_context(context[0])
+
+            # Gradient normalization copy to GPU
+            if args.norm_by_counts:
+                word_grad_norm = mx.nd.sparse.row_sparse_array(
+                    (1 / mx.nd.array(center_unique_counts).expand_dims(1),
+                     mx.nd.array(center_unique).astype(int)), ctx=context[0],
+                    shape=(len(vocab), 1))
+                subword_grad_norm = mx.nd.sparse.row_sparse_array(
+                    (1 / mx.nd.array(subwords_unique_counts).expand_dims(1),
+                     mx.nd.array(subwords_unique).astype(int)), ctx=context[0],
+                    shape=(len(subword_function), 1))
+                context_grad_norm = mx.nd.sparse.row_sparse_array(
+                    (1 / mx.nd.array(context_negatives_unique_counts)
+                     .expand_dims(1),
+                     mx.nd.array(context_negatives_unique).astype(int)),
+                    ctx=context[0], shape=(len(vocab), 1))
+            if args.norm_by_log_counts:
+                word_grad_norm = mx.nd.sparse.row_sparse_array(
+                    (1 / mx.nd.log(
+                        mx.nd.array(center_unique_counts).expand_dims(1) + 1),
+                     mx.nd.array(center_unique).astype(int)), ctx=context[0],
+                    shape=(len(vocab), 1))
+                subword_grad_norm = mx.nd.sparse.row_sparse_array(
+                    (1 / mx.nd.log(
+                        mx.nd.array(subwords_unique_counts).expand_dims(1) + 1
+                    ), mx.nd.array(subwords_unique).astype(int)),
+                    ctx=context[0], shape=(len(subword_function), 1))
+                context_grad_norm = mx.nd.sparse.row_sparse_array(
+                    (1 / mx.nd.log(
+                        mx.nd.array(context_negatives_unique_counts)
+                        .expand_dims(1) + 1),
+                     mx.nd.array(context_negatives_unique).astype(int)),
+                    ctx=context[0], shape=(len(vocab), 1))
 
             with mx.autograd.record():
                 # Combine subword level embeddings with word embeddings
@@ -370,6 +429,17 @@ def train(args):
                 clip_embeddings_gradients(
                     trainer_subwords._params,
                     args.groupwise_subwords_clip_gradient)
+
+            if args.norm_by_counts or args.norm_by_log_counts:
+                word_grad = embedding.embedding.weight.grad(ctx=context[0])
+                word_grad *= word_grad_norm
+                subword_grad = \
+                    embedding.subword_embedding.embedding.weight.grad(
+                        ctx=context[0])
+                subword_grad *= subword_grad_norm
+                context_grad = embedding_out.embedding.weight.grad(
+                    ctx=context[0])
+                context_grad *= context_grad_norm
 
             trainer.step(batch_size=1)
             trainer_subwords.step(batch_size=1)
