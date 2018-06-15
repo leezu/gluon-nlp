@@ -24,6 +24,7 @@
 import logging
 import time
 from contextlib import contextmanager
+import random
 
 import mxnet as mx
 import numpy as np
@@ -58,11 +59,7 @@ def print_time(task):
 @numba_njit
 def prune_sentences(coded, idx_to_pdiscard):
     """Downsample frequent words."""
-    pruned = []
-    for idx in coded:
-        if np.random.uniform(0.0, 1.0) < idx_to_pdiscard[idx]:
-            pruned.append(idx)
-    return pruned
+    return [t for t in coded if random.uniform(0, 1) > idx_to_pdiscard[t]]
 
 
 def clip_embeddings_gradients(parameters, max_l2):
