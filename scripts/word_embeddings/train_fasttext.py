@@ -378,7 +378,6 @@ def train(args):
                     context_negatives_unique_counts[:-1]
 
             # To GPU
-            mx.nd.waitall()  # waitall() until mxnet #11041 is merged
             center = center.as_in_context(context[0])
             center_mask = mx.nd.ones_like(center, ctx=center.context)
             if args.ngram_buckets:  # Fasttext model
@@ -522,10 +521,11 @@ def train(args):
             log_avg_loss += loss.mean()
             if (i + 1) % args.log_interval == 0:
                 wps = log_wc / (time.time() - log_start_time)
+                # Forces waiting for computation by computing loss value
+                log_avg_loss = log_avg_loss.asscalar() / args.log_interval
                 logging.info('[Epoch {} Batch {}/{}] loss={:.4f}, '
                              'throughput={:.2f}K wps, wc={:.2f}K'.format(
-                                 epoch, i + 1, num_batches,
-                                 log_avg_loss.asscalar() / args.log_interval,
+                                 epoch, i + 1, num_batches, log_avg_loss,
                                  wps / 1000, log_wc / 1000))
                 log_start_time = time.time()
                 log_avg_loss = 0
