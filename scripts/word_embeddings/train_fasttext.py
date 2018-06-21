@@ -29,6 +29,12 @@ The FastText embedding model was introduced by
 - Bojanowski, P., Grave, E., Joulin, A., & Mikolov, T. (2017). Enriching word
   vectors with subword information. TACL, 5(), 135–146.
 
+When setting --ngram-buckets to 0, a Word2Vec embedding model is trained. The
+Word2Vec embedding model was introduced by
+
+- Tomas Mikolov, Kai Chen, Greg Corrado, and Jeffrey Dean. Efficient estimation
+  of word representations in vector space. ICLR Workshop , 2013
+
 """
 import argparse
 import functools
@@ -83,7 +89,8 @@ def parse_args():
     group.add_argument('--ngrams', type=int, nargs='+', default=[3, 4, 5, 6])
     group.add_argument(
         '--ngram-buckets', type=int, default=500000,
-        help='Size of word_context set of the ngram hash function.')
+        help='Size of word_context set of the ngram hash function. '
+        'Set this to 0 for Word2Vec style training.')
     group.add_argument('--model', type=str, default='skipgram',
                        help='SkipGram or CBOW.')
     group.add_argument('--window', type=int, default=5,
@@ -170,28 +177,32 @@ def get_train_data(args):
                                              idx_to_pdiscard=idx_to_pdiscard)
         coded_dataset = list(map(prune_sentences_, coded_dataset))
 
-    with print_time('prepare subwords'):
-        subword_function = nlp.vocab.create_subword_function(
-            'NGramHashes', ngrams=args.ngrams, num_subwords=args.ngram_buckets)
+    if args.ngram_buckets:  # Fasttext model
+        with print_time('prepare subwords'):
+            subword_function = nlp.vocab.create_subword_function(
+                'NGramHashes', ngrams=args.ngrams,
+                num_subwords=args.ngram_buckets)
 
-        # Precompute a idx to subwordidxs mapping to support fast lookup
-        idx_to_subwordidxs = list(subword_function(vocab.idx_to_token))
-        max_subwordidxs_len = max(len(s) for s in idx_to_subwordidxs)
+            # Precompute a idx to subwordidxs mapping to support fast lookup
+            idx_to_subwordidxs = list(subword_function(vocab.idx_to_token))
+            max_subwordidxs_len = max(len(s) for s in idx_to_subwordidxs)
 
-        # Padded max_subwordidxs_len + 1 so each row contains at least one -1
-        # element which can be found by np.argmax below.
-        idx_to_subwordidxs = np.stack(
-            np.pad(b.asnumpy(), (0, max_subwordidxs_len - len(b) + 1), \
-                   constant_values=-1, mode='constant')
-            for b in idx_to_subwordidxs).astype(np.float32)
-        idx_to_subwordidxs = mx.nd.array(idx_to_subwordidxs)
+            # Padded max_subwordidxs_len + 1 so each row contains at least one -1
+            # element which can be found by np.argmax below.
+            idx_to_subwordidxs = np.stack(
+                np.pad(b.asnumpy(), (0, max_subwordidxs_len - len(b) + 1), \
+                       constant_values=-1, mode='constant')
+                for b in idx_to_subwordidxs).astype(np.float32)
+            idx_to_subwordidxs = mx.nd.array(idx_to_subwordidxs)
 
-        logging.info('Using %s to obtain subwords. '
-                     'The word with largest number of subwords '
-                     'has %s subwords.', subword_function, max_subwordidxs_len)
-
-    return (coded_dataset, negatives_sampler, vocab, subword_function,
-            idx_to_subwordidxs)
+            logging.info('Using %s to obtain subwords. '
+                         'The word with largest number of subwords '
+                         'has %s subwords.', subword_function,
+                         max_subwordidxs_len)
+        return (coded_dataset, negatives_sampler, vocab, subword_function,
+                idx_to_subwordidxs)
+    else:
+        return coded_dataset, negatives_sampler, vocab
 
 
 def save_params(args, embedding, embedding_out):
@@ -241,20 +252,29 @@ def indices_to_subwordindices_mask(indices, idx_to_subwordidxs):
 ###############################################################################
 def train(args):
     """Training helper."""
-    coded_dataset, negatives_sampler, vocab, subword_function, \
-        idx_to_subwordidxs = get_train_data(args)
-    if args.no_deduplicate_words:
-        embedding = nlp.model.train.FasttextEmbeddingModel(
-            token_to_idx=vocab.token_to_idx,
-            subword_function=subword_function,
-            embedding_size=args.emsize,
-            weight_initializer=mx.init.Uniform(scale=1 / args.emsize),
-            sparse_grad=not args.no_sparse_grad,
-        )
+    if args.ngram_buckets:  # Fasttext model
+        coded_dataset, negatives_sampler, vocab, subword_function, \
+            idx_to_subwordidxs = get_train_data(args)
+        if args.no_deduplicate_words:
+            embedding = nlp.model.train.FasttextEmbeddingModel(
+                token_to_idx=vocab.token_to_idx,
+                subword_function=subword_function,
+                embedding_size=args.emsize,
+                weight_initializer=mx.init.Uniform(scale=1 / args.emsize),
+                sparse_grad=not args.no_sparse_grad,
+            )
+        else:
+            embedding = nlp.model.train.DeduplicatedFasttextEmbeddingModel(
+                token_to_idx=vocab.token_to_idx,
+                subword_function=subword_function,
+                embedding_size=args.emsize,
+                weight_initializer=mx.init.Uniform(scale=1 / args.emsize),
+                sparse_grad=not args.no_sparse_grad,
+            )
     else:
-        embedding = nlp.model.train.DeduplicatedFasttextEmbeddingModel(
+        coded_dataset, negatives_sampler, vocab = get_train_data(args)
+        embedding = nlp.model.train.SimpleEmbeddingModel(
             token_to_idx=vocab.token_to_idx,
-            subword_function=subword_function,
             embedding_size=args.emsize,
             weight_initializer=mx.init.Uniform(scale=1 / args.emsize),
             sparse_grad=not args.no_sparse_grad,
@@ -280,11 +300,13 @@ def train(args):
         list(embedding_out.collect_params().values())
     trainer = mx.gluon.Trainer(params, args.optimizer, optimizer_kwargs)
 
-    optimizer_subwords_kwargs = dict(learning_rate=args.lr_subwords)
-    params_subwords = list(
-        embedding.subword_embedding.collect_params().values())
-    trainer_subwords = mx.gluon.Trainer(
-        params_subwords, args.optimizer_subwords, optimizer_subwords_kwargs)
+    if args.ngram_buckets:  # Fasttext model
+        optimizer_subwords_kwargs = dict(learning_rate=args.lr_subwords)
+        params_subwords = list(
+            embedding.subword_embedding.collect_params().values())
+        trainer_subwords = mx.gluon.Trainer(params_subwords,
+                                            args.optimizer_subwords,
+                                            optimizer_subwords_kwargs)
 
     # Logging variables
     log_wc = 0
@@ -307,25 +329,27 @@ def train(args):
             negatives, negatives_mask = negatives_sampler(
                 negatives_shape, word_context, word_context_mask)
 
-            if args.model.lower() == 'skipgram':
-                if args.no_deduplicate_words:
+            if args.ngram_buckets:  # Fasttext model
+                if args.model.lower() == 'skipgram':
+                    if args.no_deduplicate_words:
+                        subwords, subwords_mask = \
+                            indices_to_subwordindices_mask(center, idx_to_subwordidxs)
+                    else:
+                        unique, inverse_unique_indices = np.unique(
+                            center.asnumpy(), return_inverse=True)
+                        unique = mx.nd.array(unique)
+                        inverse_unique_indices = mx.nd.array(
+                            inverse_unique_indices, ctx=context[0])
+                        subwords, subwords_mask = \
+                            indices_to_subwordindices_mask(unique, idx_to_subwordidxs)
+                elif args.model.lower() == 'cbow':
                     subwords, subwords_mask = \
-                        indices_to_subwordindices_mask(center, idx_to_subwordidxs)
+                        indices_to_subwordindices_mask(word_context,
+                                                       idx_to_subwordidxs)
                 else:
-                    unique, inverse_unique_indices = np.unique(
-                        center.asnumpy(), return_inverse=True)
-                    unique = mx.nd.array(unique)
-                    inverse_unique_indices = mx.nd.array(
-                        inverse_unique_indices, ctx=context[0])
-                    subwords, subwords_mask = \
-                        indices_to_subwordindices_mask(unique, idx_to_subwordidxs)
-            elif args.model.lower() == 'cbow':
-                subwords, subwords_mask = \
-                    indices_to_subwordindices_mask(word_context,
-                                                   idx_to_subwordidxs)
-            else:
-                logging.error('Unsupported model %s.', args.model)
-                sys.exit(1)
+                    logging.error('Unsupported model %s.', args.model)
+                    sys.exit(1)
+
             num_update += len(center)
 
             # Get counts for normalization
@@ -334,12 +358,13 @@ def train(args):
                 center_unique, center_unique_counts = np.unique(
                     center.asnumpy(), return_counts=True)
                 # embedding subword grad
-                subwords_unique, subwords_unique_counts = np.unique(
-                    np.ma.array(subwords.asnumpy(),
-                                mask=subwords_mask.asnumpy() == 0),
-                    return_counts=True)
-                subwords_unique = subwords_unique[:-1].filled(np.nan)
-                subwords_unique_counts = subwords_unique_counts[:-1]
+                if args.ngram_buckets:  # Fasttext model
+                    subwords_unique, subwords_unique_counts = np.unique(
+                        np.ma.array(subwords.asnumpy(),
+                                    mask=subwords_mask.asnumpy() == 0),
+                        return_counts=True)
+                    subwords_unique = subwords_unique[:-1].filled(np.nan)
+                    subwords_unique_counts = subwords_unique_counts[:-1]
                 # embedding out grad
                 context_negatives_unique, context_negatives_unique_counts = \
                     np.unique(np.ma.concatenate([
@@ -356,9 +381,10 @@ def train(args):
             mx.nd.waitall()  # waitall() until mxnet #11041 is merged
             center = center.as_in_context(context[0])
             center_mask = mx.nd.ones_like(center, ctx=center.context)
-            subwords = subwords.as_in_context(context[0])
-            subwords_mask = subwords_mask.astype(np.float32).as_in_context(
-                context[0])
+            if args.ngram_buckets:  # Fasttext model
+                subwords = subwords.as_in_context(context[0])
+                subwords_mask = subwords_mask.astype(np.float32).as_in_context(
+                    context[0])
             word_context = word_context.as_in_context(context[0])
             word_context_mask = word_context_mask.as_in_context(context[0])
             negatives = negatives.as_in_context(context[0])
@@ -370,10 +396,12 @@ def train(args):
                     (1 / mx.nd.array(center_unique_counts).expand_dims(1),
                      mx.nd.array(center_unique).astype(int)), ctx=context[0],
                     shape=(len(vocab), 1))
-                subword_grad_norm = mx.nd.sparse.row_sparse_array(
-                    (1 / mx.nd.array(subwords_unique_counts).expand_dims(1),
-                     mx.nd.array(subwords_unique).astype(int)), ctx=context[0],
-                    shape=(len(subword_function), 1))
+                if args.ngram_buckets:  # Fasttext model
+                    subword_grad_norm = mx.nd.sparse.row_sparse_array(
+                        (1 /
+                         mx.nd.array(subwords_unique_counts).expand_dims(1),
+                         mx.nd.array(subwords_unique).astype(int)),
+                        ctx=context[0], shape=(len(subword_function), 1))
                 context_grad_norm = mx.nd.sparse.row_sparse_array(
                     (1 / mx.nd.array(context_negatives_unique_counts)
                      .expand_dims(1),
@@ -385,11 +413,12 @@ def train(args):
                         mx.nd.array(center_unique_counts).expand_dims(1) + 1),
                      mx.nd.array(center_unique).astype(int)), ctx=context[0],
                     shape=(len(vocab), 1))
-                subword_grad_norm = mx.nd.sparse.row_sparse_array(
-                    (1 / mx.nd.log(
-                        mx.nd.array(subwords_unique_counts).expand_dims(1) + 1
-                    ), mx.nd.array(subwords_unique).astype(int)),
-                    ctx=context[0], shape=(len(subword_function), 1))
+                if args.ngram_buckets:  # Fasttext model
+                    subword_grad_norm = mx.nd.sparse.row_sparse_array(
+                        (1 / mx.nd.log(
+                            mx.nd.array(subwords_unique_counts).expand_dims(1)
+                            + 1), mx.nd.array(subwords_unique).astype(int)),
+                        ctx=context[0], shape=(len(subword_function), 1))
                 context_grad_norm = mx.nd.sparse.row_sparse_array(
                     (1 / mx.nd.log(
                         mx.nd.array(context_negatives_unique_counts)
@@ -400,13 +429,15 @@ def train(args):
             with mx.autograd.record():
                 # Combine subword level embeddings with word embeddings
                 if args.model.lower() == 'skipgram':
-                    if args.no_deduplicate_words:
+                    if args.ngram_buckets and args.no_deduplicate_words:
                         emb_in = embedding(center, center_mask, subwords,
                                            subwords_mask)
-                    else:
+                    elif args.ngram_buckets:
                         emb_in = embedding(center, center_mask, subwords,
                                            subwords_mask,
                                            inverse_unique_indices)
+                    else:
+                        emb_in = embedding(center, center_mask)
 
                     with mx.autograd.pause():
                         word_context_negatives = mx.nd.concat(
@@ -451,17 +482,21 @@ def train(args):
 
             if args.optimizer.lower() not in ['adagrad', 'adam'
                                               ] and not args.no_lr_policy:
-                trainer.set_learning_rate(args.lr * (1 - progress))
-            if args.optimizer_subwords.lower() not in [
-                    'adagrad', 'adam'
-            ] and not args.no_lr_subwords_policy:
-                trainer_subwords.set_learning_rate(args.lr * (1 - progress))
+                trainer.set_learning_rate(
+                    max(0.0001, args.lr * (1 - progress)))
+
+            if (args.ngram_buckets and
+                    args.optimizer_subwords.lower() not in ['adagrad', 'adam']
+                    and not args.no_lr_subwords_policy):
+                trainer_subwords.set_learning_rate(
+                    max(0.0001, args.lr * (1 - progress)))
 
             # Normalize gradients
             if args.groupwise_clip_gradient > 0:
                 clip_embeddings_gradients(trainer._params,
                                           args.groupwise_clip_gradient)
-            if args.groupwise_subwords_clip_gradient > 0:
+            if (args.ngram_buckets
+                    and args.groupwise_subwords_clip_gradient > 0):
                 clip_embeddings_gradients(
                     trainer_subwords._params,
                     args.groupwise_subwords_clip_gradient)
@@ -469,16 +504,18 @@ def train(args):
             if args.norm_by_counts or args.norm_by_log_counts:
                 word_grad = embedding.embedding.weight.grad(ctx=context[0])
                 word_grad *= word_grad_norm
-                subword_grad = \
-                    embedding.subword_embedding.embedding.weight.grad(
-                        ctx=context[0])
-                subword_grad *= subword_grad_norm
+                if args.ngram_buckets:
+                    subword_grad = \
+                        embedding.subword_embedding.embedding.weight.grad(
+                            ctx=context[0])
+                    subword_grad *= subword_grad_norm
                 context_grad = embedding_out.embedding.weight.grad(
                     ctx=context[0])
                 context_grad *= context_grad_norm
 
             trainer.step(batch_size=1)
-            trainer_subwords.step(batch_size=1)
+            if args.ngram_buckets:
+                trainer_subwords.step(batch_size=1)
 
             # Logging
             log_wc += loss.shape[0]
@@ -518,6 +555,11 @@ def evaluate(args, embedding, vocab, global_step, eval_analogy=False):
         eval_tokens_set = evaluation.get_tokens_in_evaluation_datasets(args)
         if not args.no_eval_analogy:
             eval_tokens_set.update(vocab.idx_to_token)
+
+        if not args.ngram_buckets:
+            # Word2Vec does not support computing vectors for OOV words
+            eval_tokens_set = filter(lambda t: t in vocab, eval_tokens_set)
+
         eval_tokens = list(eval_tokens_set)
 
     os.makedirs(args.logdir, exist_ok=True)
