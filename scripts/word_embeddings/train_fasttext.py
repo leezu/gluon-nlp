@@ -130,7 +130,7 @@ def parse_args():
     group.add_argument('--logdir', type=str, default='logs',
                        help='Directory to store logs.')
     group.add_argument('--log-interval', type=int, default=100)
-    group.add_argument('--eval-interval', type=int, default=50000,
+    group.add_argument('--eval-interval', type=int,
                        help='Evaluate every --eval-interval iterations '
                        'in addition to at the end of every epoch.')
     group.add_argument('--no-eval-analogy', action='store_true',
