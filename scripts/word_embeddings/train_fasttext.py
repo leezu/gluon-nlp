@@ -43,6 +43,7 @@ import math
 import os
 import random
 import sys
+import tempfile
 import time
 import warnings
 
@@ -521,11 +522,61 @@ def train(args):
                 # Forces waiting for computation by computing loss value
                 log_avg_loss = log_avg_loss.asscalar() / args.log_interval
                 wps = log_wc / (time.time() - log_start_time)
+                vector_norm = embedding.embedding.weight.data().norm(axis=1)
                 # Due to subsampling, the overall number of batches is an upper bound
-                logging.info('[Epoch {} Batch {}/{}] loss={:.4f}, '
-                             'throughput={:.2f}K wps, wc={:.2f}K'.format(
-                                 epoch, i + 1, num_tokens // args.batch_size,
-                                 log_avg_loss, wps / 1000, log_wc / 1000))
+                logging.info(
+                    '[Epoch {} Batch {}/{}] loss={:.4f}, '
+                    'throughput={:.2f}K wps, wc={:.2f}K, '
+                    'min_norm={:.2f}, mean_norm={:.2f}, max_norm={:.2f}'.
+                    format(epoch, i + 1, num_tokens // args.batch_size,
+                           log_avg_loss, wps / 1000, log_wc / 1000,
+                           vector_norm.min().asscalar(),
+                           vector_norm.mean().asscalar(),
+                           vector_norm.max().asscalar()))
+
+                num_zero_word_vectors = mx.nd.sum(
+                    vector_norm < 1E-5).asscalar()
+                assert len(vocab) == vector_norm.shape[0]
+
+                log_dict = dict(
+                    global_step=num_update,
+                    epoch=epoch,
+                    batch=i + 1,
+                    loss=log_avg_loss,
+                    wps=wps / 1000,
+                    zero_word_vectors=num_zero_word_vectors,
+                    nonzero_word_vectors=len(vocab) - num_zero_word_vectors,
+                    word_vector_norm_mean=vector_norm.mean().asscalar(),
+                    word_vector_norm_min=vector_norm.min().asscalar(),
+                    word_vector_norm_max=vector_norm.max().asscalar(),
+                )
+
+                if args.ngram_buckets:
+                    subword_idx_to_vec = embedding.subword_embedding.embedding.weight.data(
+                        ctx=context[0]).as_in_context(
+                            mx.cpu()).tostype('default')
+                    subword_embedding_norm = mx.nd.norm(
+                        subword_idx_to_vec, axis=1)
+                    num_zero_subword_vectors = mx.nd.sum(
+                        subword_embedding_norm < 1E-5).asscalar()
+                    assert len(subword_function) == \
+                        subword_embedding_norm.shape[0]
+
+                    log_dict = dict(
+                        zero_subword_vectors=num_zero_subword_vectors,
+                        nonzero_subword_vectors=len(subword_function) -
+                        num_zero_subword_vectors,
+                        subword_vector_norm_mean=subword_embedding_norm.mean()
+                        .asscalar(),
+                        subword_vector_norm_min=subword_embedding_norm.min()
+                        .asscalar(),
+                        subword_vector_norm_max=subword_embedding_norm.max()
+                        .asscalar(),
+                        **log_dict,
+                    )
+
+                log(args, log_dict)
+
                 log_start_time = time.time()
                 log_avg_loss = 0
                 log_wc = 0
@@ -564,9 +615,6 @@ def evaluate(args, embedding, vocab, global_step, eval_analogy=False):
 
         eval_tokens = list(eval_tokens_set)
 
-    if not os.path.isdir(args.logdir):
-        os.makedirs(args.logdir)
-
     # Compute their word vectors
     context = get_context(args)
     mx.nd.waitall()
@@ -587,8 +635,39 @@ def evaluate(args, embedding, vocab, global_step, eval_analogy=False):
     return results
 
 
+def log(args, kwargs):
+    logfile = os.path.join(args.logdir, 'log.tsv')
+
+    if 'log_created' not in globals():
+        if os.path.exists(logfile):
+            logging.error(f'Logfile {logfile} already exists.')
+            sys.exit(1)
+
+        global log_created
+
+        log_created = kwargs.keys()
+        header = '\t'.join((str(k) for k in kwargs.keys())) + '\n'
+        with open(logfile, 'w') as f:
+            f.write(header)
+
+    # Log variables shouldn't change during training
+    assert log_created == kwargs.keys()
+
+    with open(logfile, 'a') as f:
+        f.write('\t'.join((str(v) for v in kwargs.values())) + '\n')
+
+
 if __name__ == '__main__':
     logging.basicConfig()
     logging.getLogger().setLevel(logging.INFO)
     args_ = parse_args()
+
+    # Check logdir
+    if os.path.exists(args_.logdir):
+        newlogdir = tempfile.mkdtemp(dir=args_.logdir)
+        logging.warning(f'{args_.logdir} exists. Using {newlogdir}')
+        args_.logdir = newlogdir
+
+    os.makedirs(args_.logdir, exist_ok=True)
+
     train(args_)
