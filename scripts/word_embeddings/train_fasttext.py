@@ -56,6 +56,7 @@ import numpy as np
 import gluonnlp as nlp
 from gluonnlp.base import numba_njit, numba_prange
 
+import trainer
 import evaluation
 from data import WikiDumpStream
 from candidate_sampler import remove_accidental_hits
@@ -116,13 +117,6 @@ def parse_args():
     group.add_argument('--frequent-token-subsampling', type=float,
                        default=1E-4,
                        help='Frequent token subsampling constant.')
-
-    # Optimization options
-    group = parser.add_argument_group('Optimization arguments')
-    group.add_argument('--optimizer', type=str, default='adagrad')
-    group.add_argument('--lr', type=float, default=0.05)
-    group.add_argument('--optimizer-subwords', type=str, default='adagrad')
-    group.add_argument('--lr-subwords', type=float, default=0.5)
     group.add_argument('--seed', type=int, default=1, help='random seed')
 
     # Logging
@@ -138,6 +132,7 @@ def parse_args():
 
     # Evaluation options
     evaluation.add_parameters(parser)
+    trainer.add_parameters(parser)
 
     args = parser.parse_args()
     evaluation.validate_args(args)
@@ -296,18 +291,15 @@ def train(args):
         embedding.hybridize(static_alloc=not args.no_static_alloc)
         embedding_out.hybridize(static_alloc=not args.no_static_alloc)
 
-    optimizer_kwargs = dict(learning_rate=args.lr)
-    params = list(embedding.embedding.collect_params().values()) + \
-        list(embedding_out.collect_params().values())
-    trainer = mx.gluon.Trainer(params, args.optimizer, optimizer_kwargs)
+    trainer_emb_in = trainer.get_embedding_in_trainer(
+        args, embedding.embedding.collect_params(), len(vocab))
+    trainer_emb_out = trainer.get_embedding_out_trainer(
+        args, embedding_out.collect_params())
 
     if args.ngram_buckets:
-        optimizer_subwords_kwargs = dict(learning_rate=args.lr_subwords)
-        params_subwords = list(
-            embedding.subword_embedding.collect_params().values())
-        trainer_subwords = mx.gluon.Trainer(params_subwords,
-                                            args.optimizer_subwords,
-                                            optimizer_subwords_kwargs)
+        trainer_subwords = trainer.get_subword_trainer(
+            args, embedding.subword_embedding.collect_params(),
+            len(subword_function))
 
     def skipgram_batch(data):
         """Create a batch for Skipgram training objective."""
@@ -480,18 +472,31 @@ def train(args):
 
             loss.backward()
             num_update += len(label)
-            if args.optimizer.lower() != 'adagrad':
-                trainer.set_learning_rate(
+            if 'adagrad' not in args.optimizer.lower():
+                trainer_emb_in.set_learning_rate(
+                    max(0.0001, args.lr * (1 - progress)))
+                trainer_emb_out.set_learning_rate(
                     max(0.0001, args.lr * (1 - progress)))
 
-            if (args.optimizer_subwords.lower() != 'adagrad'
+            # TODO change when adding CNN
+            if ('adagrad' not in args.subword_sparse_optimizer.lower()
                     and args.ngram_buckets):
                 trainer_subwords.set_learning_rate(
-                    max(0.0001, args.lr_subwords * (1 - progress)))
+                    max(0.0001, args.subword_sparse_lr * (1 - progress)))
 
-            trainer.step(batch_size=1)
+            if (((i + 1) % args.log_interval == 0) or
+                (args.eval_interval and ((i + 1) % args.eval_interval == 0))):
+                if 'proximal' in args.optimizer:
+                    trainer_emb_in._optimizer.lazy_update = False
+                if (args.ngram_buckets
+                        and 'proximal' in args.subword_sparse_optimizer):
+                    trainer_subwords._optimizer.lazy_update = False
+            trainer_emb_in.step(batch_size=1)
+            trainer_emb_out.step(batch_size=1)
+            trainer_emb_in._optimizer.lazy_update = True
             if args.ngram_buckets:
                 trainer_subwords.step(batch_size=1)
+                trainer_subwords._optimizer.lazy_update = True
 
             # Logging
             log_wc += loss.shape[0]
