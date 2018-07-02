@@ -57,9 +57,9 @@ def add_parameters(parser):
     group = parser.add_argument_group(
         'Dense subword network optimization arguments')
     group.add_argument('--subword-dense-optimizer', type=str,
-                       default='adagrad',
+                       default='adam',
                        help='Optimizer used to train subword network.')
-    group.add_argument('--subword-dense-lr', type=float, default=0.01,
+    group.add_argument('--subword-dense-lr', type=float, default=1e-5,
                        help='Learning rate for subword embedding network.')
     group.add_argument('--subword-dense-lr-schedule', type=str,
                        default='linear', help='Learning rate schedule.')
@@ -126,10 +126,10 @@ def get_embedding_out_trainer(args, params):
 
 def get_subword_trainer(args, params, num_subword_units):
     """Parase args depending on subwort network and return trainer."""
-    # if args.args.ngram_buckets:  # TODO enable when adding CNN network
-    return _get_sparse_subword_trainer(args, params, num_subword_units)
-    # else:
-    #     return _get_dense_subword_trainer(args, params)
+    if args.subword_network.lower() == 'fasttext':
+        return _get_sparse_subword_trainer(args, params, num_subword_units)
+    else:
+        return _get_dense_subword_trainer(args, params)
 
 
 def _get_sparse_subword_trainer(args, params, num_subword_units):
