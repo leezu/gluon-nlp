@@ -26,7 +26,6 @@ the GluonNLP toolkit.
 import itertools
 import sys
 import logging
-import json
 
 import mxnet as mx
 import numpy as np
@@ -89,42 +88,128 @@ def validate_args(args):
             sys.exit(1)
 
 
-def iterate_similarity_datasets(args):
-    """Generator over all similarity evaluation datasets.
+def similarity_datasets(dataset_names):
+    """Similarity evaluation datasets"""
+    datasets = (
+        ('WordSim353Similarity', 'similarity',
+         nlp.data.create('WordSim353', segment='similarity')),
+        ('WordSim353Relatedness', 'relatedness',
+         nlp.data.create('WordSim353', segment='relatedness')),
+        ('MEN', 'all', nlp.data.create('MEN')),
+        ('RadinskyMTurk', 'all', nlp.data.create('RadinskyMTurk')),
+        ('RareWords', 'all', nlp.data.create('RareWords')),
+        ('SimLex999', 'similarity', nlp.data.create('SimLex999')),
+        ('SimVerb3500', 'imilarity', nlp.data.create('SimVerb3500')),
+        ('SemEval17Task2', 'similarity', nlp.data.create('SemEval17Task2')),
+        ('BakerVerb143', 'all', nlp.data.create('SemEval17Task2')),
+        ('YangPowersVerb130', 'all', nlp.data.create('YangPowersVerb130')),
+    )
 
-    Iteratos over dataset names, keyword arguments for their creation and the
-    created dataset.
+    return [
+        d for d in datasets
+        if any(d[0].lower().startswith(specified_dataset.lower())
+               for specified_dataset in dataset_names)
+    ]
+
+
+def analogy_datasets(dataset_names):
+    """Analogy evaluation datasets"""
+    datasets = (
+        ('GoogleAnalogyTestSet', 'morphological',
+         nlp.data.create('GoogleAnalogyTestSet', group='syntactic')),
+        ('GoogleAnalogyTestSet', 'semantic',
+         nlp.data.create('GoogleAnalogyTestSet', group='semantic')),
+    )
+
+    return [
+        d for d in datasets
+        if any(d[0].lower().startswith(specified_dataset.lower())
+               for specified_dataset in dataset_names)
+    ]
+
+
+def similarity_dataset_split_categories(datasets, vocab,
+                                        zero_word_vectors_set):
+    """Split similarity datasets into parts.
+
+    Based on if a sample contains only known words, known words but of which
+    some are in zero_word_vectors_set or contains any unknown (ie OOV) words.
+
+    Returns
+    -------
+    list of tuple(str, str, str, nlp.data.WordSimilarityEvaluationDataset)
+      name, word_type, category, dataset where name, word_type are copied from
+      input and category is in {'all', 'all_known', 'known_but_zero',
+      'unknown'}
 
     """
-    for dataset_name in args.similarity_datasets:
-        parameters = nlp.data.list_datasets(dataset_name)
-        for key_values in itertools.product(*parameters.values()):
-            kwargs = dict(zip(parameters.keys(), key_values))
-            yield dataset_name, kwargs, nlp.data.create(dataset_name, **kwargs)
+
+    category_datasets = []
+    for name, word_type, dataset in datasets:
+        all_known = []
+        known_but_zero = []
+        unknown = []
+        for sample in dataset:
+            if any(w not in vocab for w in sample[:2]):
+                unknown.append(sample)
+            elif any(w in zero_word_vectors_set for w in sample[:2]):
+                known_but_zero.append(sample)
+            else:
+                all_known.append(sample)
+        category_datasets.append((name, word_type, 'all', dataset))
+        if all_known:
+            category_datasets.append((name, word_type, 'all_known', all_known))
+        if known_but_zero:
+            category_datasets.append((name, word_type, 'known_but_zero',
+                                      known_but_zero))
+        if unknown:
+            category_datasets.append((name, word_type, 'unknown', unknown))
+    return category_datasets
 
 
-def iterate_analogy_datasets(args):
-    """Generator over all analogy evaluation datasets.
+def analogy_dataset_split_categories(datasets, vocab, zero_word_vectors_set):
+    """Split similarity datasets into parts.
 
-    Iteratos over dataset names, keyword arguments for their creation and the
-    created dataset.
+    Based on if a sample contains only known words, known words but of which
+    some are in zero_word_vectors_set or contains any unknown (ie OOV) words.
+
+    Returns
+    -------
+    list of tuple(str, str, str, nlp.data.WordSimilarityEvaluationDataset)
+      name, word_type, category, dataset where name, word_type are copied from
+      input and category is in {'all_known', 'known_but_zero', 'unknown'}
 
     """
-    for dataset_name in args.analogy_datasets:
-        parameters = nlp.data.list_datasets(dataset_name)
-        for key_values in itertools.product(*parameters.values()):
-            kwargs = dict(zip(parameters.keys(), key_values))
-            yield dataset_name, kwargs, nlp.data.create(dataset_name, **kwargs)
+    category_datasets = []
+    for name, word_type, dataset in datasets:
+        all_known = []
+        known_but_zero = []
+        unknown = []
+        for sample in dataset:
+            if any(w not in vocab for w in sample):
+                unknown.append(sample)
+            elif any(w in zero_word_vectors_set for w in sample):
+                known_but_zero.append(sample)
+            else:
+                all_known.append(sample)
+        if all_known:
+            category_datasets.append((name, word_type, 'all_known', all_known))
+        if known_but_zero:
+            category_datasets.append((name, word_type, 'known_but_zero',
+                                      known_but_zero))
+        if unknown:
+            category_datasets.append((name, word_type, 'unknown', unknown))
+    return category_datasets
 
 
 def get_tokens_in_evaluation_datasets(args):
     """Returns a set of all tokens occuring the evaluation datasets."""
     tokens = set()
-    for _, _, dataset in iterate_similarity_datasets(args):
+    for _, _, dataset in similarity_datasets(args.similarity_datasets):
         tokens.update(
             itertools.chain.from_iterable((d[0], d[1]) for d in dataset))
 
-    for _, _, dataset in iterate_analogy_datasets(args):
+    for _, _, dataset in analogy_datasets(args.analogy_datasets):
         tokens.update(
             itertools.chain.from_iterable(
                 (d[0], d[1], d[2], d[3]) for d in dataset))
@@ -132,11 +217,14 @@ def get_tokens_in_evaluation_datasets(args):
     return tokens
 
 
-def evaluate_similarity(args, token_embedding, ctx, logfile=None,
-                        global_step=0):
+def evaluate_similarity(args, token_embedding, ctx, vocab,
+                        zero_word_vectors_set={}, logfile=None, global_step=0):
     """Evaluate on specified similarity datasets."""
 
-    results = []
+    datasets = similarity_dataset_split_categories(
+        similarity_datasets(args.similarity_datasets), vocab,
+        zero_word_vectors_set)
+
     for similarity_function in args.similarity_functions:
         evaluator = nlp.embedding.evaluation.WordEmbeddingSimilarity(
             idx_to_vec=token_embedding.idx_to_vec,
@@ -146,8 +234,7 @@ def evaluate_similarity(args, token_embedding, ctx, logfile=None,
             evaluator.hybridize()
 
         # Evaluate all datasets
-        for (dataset_name, dataset_kwargs,
-             dataset) in iterate_similarity_datasets(args):
+        for (dataset_name, word_type, category, dataset) in datasets:
             initial_length = len(dataset)
             dataset_coded = [[
                 token_embedding.token_to_idx[d[0]],
@@ -160,33 +247,25 @@ def evaluate_similarity(args, token_embedding, ctx, logfile=None,
             pred_similarity = evaluator(
                 mx.nd.array(words1, ctx=ctx), mx.nd.array(words2, ctx=ctx))
             sr = stats.spearmanr(pred_similarity.asnumpy(), np.array(scores))
-            logging.info('Spearman rank correlation on %s %s with %s:\t%s',
-                         dataset.__class__.__name__, str(dataset_kwargs),
+            logging.info('Spearman rank correlation on %s %s %s with %s:\t%s',
+                         dataset_name, word_type, category,
                          similarity_function, sr.correlation)
 
-            result = dict(
-                task='similarity',
-                dataset_name=dataset_name,
-                dataset_kwargs=dataset_kwargs,
-                similarity_function=similarity_function,
-                spearmanr=sr.correlation,
-                num_dropped=num_dropped,
-                global_step=global_step,
-            )
-            log_similarity_result(logfile, result)
-            results.append(result)
-
-    return results
+            log_result(logfile, 'similarity', dataset_name, word_type,
+                       category, similarity_function, sr.correlation,
+                       len(dataset_coded), num_dropped, global_step)
 
 
-def evaluate_analogy(args, token_embedding, ctx, logfile=None, global_step=0):
+def evaluate_analogy(args, token_embedding, ctx, vocab,
+                     zero_word_vectors_set={}, logfile=None, global_step=0):
     """Evaluate on specified analogy datasets.
 
     The analogy task is an open vocabulary task, make sure to pass a
     token_embedding with a sufficiently large number of supported tokens.
 
     """
-    results = []
+    datasets = analogy_dataset_split_categories(
+        analogy_datasets(args.analogy_datasets), vocab, zero_word_vectors_set)
     exclude_question_words = not args.analogy_dont_exclude_question_words
     for analogy_function in args.analogy_functions:
         evaluator = nlp.embedding.evaluation.WordEmbeddingAnalogy(
@@ -197,8 +276,7 @@ def evaluate_analogy(args, token_embedding, ctx, logfile=None, global_step=0):
         if not args.no_hybridize:
             evaluator.hybridize()
 
-        for (dataset_name, dataset_kwargs,
-             dataset) in iterate_analogy_datasets(args):
+        for (dataset_name, word_type, category, dataset) in datasets:
             initial_length = len(dataset)
             dataset_coded = [[
                 token_embedding.token_to_idx[d[0]],
@@ -222,61 +300,30 @@ def evaluate_analogy(args, token_embedding, ctx, logfile=None, global_step=0):
                 pred_idxs = evaluator(words1, words2, words3)
                 acc.update(pred_idxs[:, 0], words4.astype(np.float32))
 
-            logging.info(
-                'Accuracy on %s %s with %s:\t%s', dataset.__class__.__name__,
-                str(dataset_kwargs), analogy_function,
-                acc.get()[1])
+            logging.info('Accuracy on %s %s %s with %s:\t%s', dataset_name,
+                         word_type, category, analogy_function,
+                         acc.get()[1])
 
-            result = dict(
-                task='analogy',
-                dataset_name=dataset_name,
-                dataset_kwargs=dataset_kwargs,
-                analogy_function=analogy_function,
-                accuracy=acc.get()[1],
-                num_dropped=num_dropped,
-                global_step=global_step,
-            )
-            log_analogy_result(logfile, result)
-            results.append(result)
-    return results
+            log_result(logfile, 'similarity', dataset_name, word_type,
+                       category, analogy_function,
+                       acc.get()[1], len(dataset_coded), num_dropped,
+                       global_step)
 
 
-def log_similarity_result(logfile, result):
-    """Log a similarity evaluation result dictionary as TSV to logfile."""
-    assert result['task'] == 'similarity'
+def log_result(logfile, *args):
+    """Log to a file.
 
+    Parameters
+    ----------
+    logfile : str
+      Path of file to append results to. If not logfile this function does
+      nothing.
+    *args : tuple(str)
+      Values to log
+    """
     if not logfile:
         return
 
     with open(logfile, 'a') as f:
-        f.write('\t'.join([
-            str(result['global_step']),
-            result['task'],
-            result['dataset_name'],
-            json.dumps(result['dataset_kwargs']),
-            result['similarity_function'],
-            str(result['spearmanr']),
-            str(result['num_dropped']),
-        ]))
-
-        f.write('\n')
-
-
-def log_analogy_result(logfile, result):
-    """Log a analogy evaluation result dictionary as TSV to logfile."""
-    assert result['task'] == 'analogy'
-
-    if not logfile:
-        return
-
-    with open(logfile, 'a') as f:
-        f.write('\t'.join([
-            str(result['global_step']),
-            result['task'],
-            result['dataset_name'],
-            json.dumps(result['dataset_kwargs']),
-            result['analogy_function'],
-            str(result['accuracy']),
-            str(result['num_dropped']),
-        ]))
+        f.write('\t'.join(str(v) for v in args))
         f.write('\n')
