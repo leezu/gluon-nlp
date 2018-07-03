@@ -289,6 +289,36 @@ class SubwordLookup(object):
         return subwords_arr, mask
 
 
+def save(args, embedding, embedding_out, vocab):
+    """Save parameters to logdir.
+
+    The parameters are first written to a temporary file and only if the saving
+    was successful atomically moved to the final location.
+
+    """
+    f, path = tempfile.mkstemp(dir=args.logdir)
+    os.close(f)
+
+    # save vocab
+    with open(path, 'w') as f:
+        f.write(vocab.to_json())
+    os.replace(path, os.path.join(args.logdir, 'vocab.json'))
+
+    # save list of words with zero word vectors
+    zero_word_vectors_words = sorted([
+        vocab.idx_to_token[idx] for idx in np.where((
+            embedding.embedding.weight.data().norm(axis=1) < 1E-5
+        ).asnumpy())[0]
+    ])
+    with open(path, 'w') as f:
+        f.write('\n'.join(zero_word_vectors_words))
+    os.replace(path, os.path.join(args.logdir, 'zero_word_vectors_words.txt'))
+
+    # write to temporary file; use os.replace
+    embedding.save_parameters(os.path.join(args.logdir, 'embedding.params'))
+    embedding_out.save_parameters(os.path.join(args.logdir, 'embedding_out.params'))
+
+
 ###############################################################################
 # Training code
 ###############################################################################
@@ -652,9 +682,8 @@ def train(args):
                  eval_analogy=not args.no_eval_analogy)
 
     # Save params
-    with print_time('save parameters'):
-        embedding.save_parameters(os.path.join(args.logdir, 'embedding.params'))
-        embedding_out.save_parameters(os.path.join(args.logdir, 'embedding_out.params'))
+    with print_time('save'):
+        save(args, embedding, embedding_out, vocab)
 
 
 def evaluate(args, embedding, vocab, global_step, eval_analogy=False):
@@ -681,16 +710,23 @@ def evaluate(args, embedding, vocab, global_step, eval_analogy=False):
                                                    allow_extend=True)
     token_embedding[eval_tokens] = embedding[eval_tokens]
 
-    results = evaluation.evaluate_similarity(
-        args, token_embedding, context[0], logfile=os.path.join(
+    # Compute set of vectors with zero word embedding
+    zero_word_vectors_words = [
+        vocab.idx_to_token[idx] for idx in np.where((
+            embedding.embedding.weight.data().norm(axis=1) < 1E-5
+        ).asnumpy())[0]
+    ]
+
+    evaluation.evaluate_similarity(
+        args, token_embedding, context[0], vocab,
+        zero_word_vectors_set=zero_word_vectors_words, logfile=os.path.join(
             args.logdir, 'similarity.tsv'), global_step=global_step)
     if eval_analogy:
         assert not args.no_eval_analogy
-        results += evaluation.evaluate_analogy(
-            args, token_embedding, context[0], logfile=os.path.join(
-                args.logdir, 'analogy.tsv'))
-
-    return results
+        evaluation.evaluate_analogy(
+            args, token_embedding, context[0], vocab,
+            zero_word_vectors_set=zero_word_vectors_words,
+            logfile=os.path.join(args.logdir, 'analogy.tsv'))
 
 
 def log(args, kwargs):
