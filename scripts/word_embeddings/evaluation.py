@@ -146,24 +146,40 @@ def similarity_dataset_split_categories(datasets, vocab,
 
     category_datasets = []
     for name, word_type, dataset in datasets:
-        all_known = []
-        known_but_zero = []
-        unknown = []
+        # Construct subsets of the dataset based on the words
+        dataset_dict = dict(
+            known=[],  # All words in the sample were seen during training
+            known_dense_vector=[],  # Also all have a non-zero word vector
+            known_dense_zero_vector=[],  # Also mixed zero/non-zero vectors
+            known_zero_vector=[],  # Also all have a zero word vector
+            unknown=[],  # At least some words are unknown
+            all_unknown=[],  # All words are unknown
+            unknown_dense_vector=[],  # Some known words have a dense vector
+            unknown_zero_vector=[],  # All known words have a zero vector
+        )
+
         for sample in dataset:
             if any(w not in vocab for w in sample[:2]):
-                unknown.append(sample)
-            elif any(w in zero_word_vectors_set for w in sample[:2]):
-                known_but_zero.append(sample)
+                dataset_dict["unknown"].append(sample)
+                if all(w not in vocab for w in sample[:2]):
+                    dataset_dict["all_unknown"].append(sample)
+                elif any((w in vocab) and (w not in zero_word_vectors_set)
+                         for w in sample[:2]):
+                    dataset_dict["unknown_dense_vector"].append(sample)
+                else:
+                    dataset_dict["unknown_zero_vector"].append(sample)
             else:
-                all_known.append(sample)
+                dataset_dict["known"].append(sample)
+                if all(w in zero_word_vectors_set for w in sample[:2]):
+                    dataset_dict["known_zero_vector"].append(sample)
+                elif any(w in zero_word_vectors_set for w in sample[:2]):
+                    dataset_dict["known_dense_zero_vector"].append(sample)
+                else:
+                    dataset_dict["known_dense_vector"].append(sample)
         category_datasets.append((name, word_type, 'all', dataset))
-        if all_known:
-            category_datasets.append((name, word_type, 'all_known', all_known))
-        if known_but_zero:
-            category_datasets.append((name, word_type, 'known_but_zero',
-                                      known_but_zero))
-        if unknown:
-            category_datasets.append((name, word_type, 'unknown', unknown))
+        for category, dataset in dataset_dict.items():
+            if dataset:
+                category_datasets.append((name, word_type, category, dataset))
     return category_datasets
 
 
@@ -182,23 +198,34 @@ def analogy_dataset_split_categories(datasets, vocab, zero_word_vectors_set):
     """
     category_datasets = []
     for name, word_type, dataset in datasets:
-        all_known = []
-        known_but_zero = []
-        unknown = []
+        # The 'all' ,'known', 'unknown' sets can be computed by combining below
+        dataset_dict = dict(
+            known_dense_vector=[],  # All known and have a non-zero word vector
+            known_dense_zero_vector=[],  # All known mixed zero/non-zero vectors
+            known_zero_vector=[],  # All known zero word vector
+            all_unknown=[],  # All words are unknown
+            unknown_dense_vector=[],  # Some known words have a dense vector
+            unknown_zero_vector=[],  # All known words have a zero vector
+        )
         for sample in dataset:
             if any(w not in vocab for w in sample):
-                unknown.append(sample)
-            elif any(w in zero_word_vectors_set for w in sample):
-                known_but_zero.append(sample)
+                if all(w not in vocab for w in sample[:2]):
+                    dataset_dict["all_unknown"].append(sample)
+                elif any((w in vocab) and (w not in zero_word_vectors_set)
+                         for w in sample[:2]):
+                    dataset_dict["unknown_dense_vector"].append(sample)
+                else:
+                    dataset_dict["unknown_zero_vector"].append(sample)
             else:
-                all_known.append(sample)
-        if all_known:
-            category_datasets.append((name, word_type, 'all_known', all_known))
-        if known_but_zero:
-            category_datasets.append((name, word_type, 'known_but_zero',
-                                      known_but_zero))
-        if unknown:
-            category_datasets.append((name, word_type, 'unknown', unknown))
+                if all(w in zero_word_vectors_set for w in sample[:2]):
+                    dataset_dict["known_zero_vector"].append(sample)
+                elif any(w in zero_word_vectors_set for w in sample[:2]):
+                    dataset_dict["known_dense_zero_vector"].append(sample)
+                else:
+                    dataset_dict["known_dense_vector"].append(sample)
+        for category, dataset in dataset_dict.items():
+            if dataset:
+                category_datasets.append((name, word_type, category, dataset))
     return category_datasets
 
 
