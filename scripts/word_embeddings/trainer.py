@@ -44,7 +44,7 @@ def add_parameters(parser):
                        'so that their norm does not surpass this.')
 
     group = parser.add_argument_group('Word level optimization arguments')
-    group.add_argument('--optimizer', type=str, default='proximalsgd')
+    group.add_argument('--optimizer', type=str, default='adagrad')
     group.add_argument('--lr', type=float, default=0.1,
                        help='Learning rate for embeddings matrix.')
     group.add_argument('--lr-schedule', type=str, default='linear',
@@ -71,7 +71,7 @@ def add_parameters(parser):
     group = parser.add_argument_group(
         'Sparse subword network optimization arguments')
     group.add_argument('--subword-sparse-optimizer', type=str,
-                       default='proximalsgd',
+                       default='adagrad',
                        help='Optimizer used to train subword network.')
     group.add_argument('--subword-sparse-lr', type=float, default=0.1,
                        help='Learning rate for subword embedding network.')
