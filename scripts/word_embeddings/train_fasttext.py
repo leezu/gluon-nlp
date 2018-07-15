@@ -208,7 +208,8 @@ def get_train_data(args):
                     'to avoid memory issues.'.format(max_subwordidxs_len))
 
         return (data, negatives_sampler, vocab, subword_function,
-                get_subwords_masks, idx_to_pdiscard, sum_counts)
+                get_subwords_masks, idx_to_pdiscard, sum_counts,
+                idx_to_subwordidxs)
     else:
         return data, negatives_sampler, vocab, idx_to_pdiscard, sum_counts
 
@@ -256,8 +257,8 @@ def train(args):
     """Training helper."""
     if args.ngram_buckets:
         data, negatives_sampler, vocab, subword_function, \
-            get_subwords_masks, idx_to_pdiscard, num_tokens = \
-            get_train_data(args)
+            get_subwords_masks, idx_to_pdiscard, num_tokens, \
+            idx_to_subwordidxs = get_train_data(args)
         embedding = nlp.model.train.FasttextEmbeddingModel(
             token_to_idx=vocab.token_to_idx,
             subword_function=subword_function,
@@ -367,18 +368,54 @@ def train(args):
                     mx.nd.array(subwords_mask, ctx=context[0]),
                     inverse_unique_indices)
 
+    # Helpers for bucketing
+    def skipgram_length_fn(data):
+        """Return lengths for bucketing."""
+        centers, _, _ = data
+        lengths = [
+            len(idx_to_subwordidxs[i])
+            for i in centers.asnumpy().astype(int).flat
+        ]
+        return lengths
+
+    def cbow_length_fn(data):
+        """Return lengths for bucketing."""
+        _, word_context, _ = data
+        word_context_np = word_context.asnumpy().astype(int)
+        lengths = [
+            max(len(idx_to_subwordidxs[i]) for i in one_context)
+            for one_context in word_context_np
+        ]
+        return lengths
+
+    def bucketing_batchify_fn(indices, data):
+        """Select elements from data batch based on bucket indices."""
+        centers, word_context, word_context_mask = data
+        return (centers[indices], word_context[indices],
+                word_context_mask[indices])
+
+    length_fn = skipgram_length_fn if args.model.lower() == 'skipgram' \
+        else cbow_length_fn
+
     num_update = 0
     for epoch in range(args.epochs):
-        context_stream = nlp.data.ContextStream(
-            stream=data, batch_size=args.batch_size, p_discard=idx_to_pdiscard,
-            window_size=args.window)
+        bucketing_split = 16
+        batches = nlp.data.ContextStream(
+            stream=data, batch_size=args.batch_size * bucketing_split
+            if args.ngram_buckets else args.batch_size,
+            p_discard=idx_to_pdiscard, window_size=args.window)
+        if args.ngram_buckets:
+            # For fastText training, create batches such that subwords used in
+            # that batch are of similar length
+            batches = nlp.data.BucketingStream(
+                batches, bucketing_split, length_fn, bucketing_batchify_fn)
 
         # Logging variables
         log_wc = 0
         log_start_time = time.time()
         log_avg_loss = 0
 
-        for i, batch in enumerate(context_stream):
+        for i, batch in enumerate(batches):
             progress = (epoch * num_tokens + i * args.batch_size) / \
                 (args.epochs * num_tokens)
 
