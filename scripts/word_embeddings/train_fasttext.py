@@ -40,6 +40,7 @@ Word2Vec embedding model was introduced by
 import os
 # Workaround for https://github.com/apache/incubator-mxnet/issues/11314
 os.environ['MXNET_FORCE_ADDTAKEGRAD'] = '1'
+os.environ['MXNET_GPU_MEM_POOL_TYPE'] = 'Round'
 
 import argparse
 import itertools
