@@ -728,13 +728,13 @@ def evaluate(args, embedding, vocab, global_step, eval_analogy=False):
     ]
 
     evaluation.evaluate_similarity(
-        args, token_embedding, context[0], vocab,
+        args, token_embedding, context[0],
         zero_word_vectors_set=zero_word_vectors_words, logfile=os.path.join(
             args.logdir, 'similarity.tsv'), global_step=global_step)
     if eval_analogy:
         assert not args.no_eval_analogy
         evaluation.evaluate_analogy(
-            args, token_embedding, context[0], vocab,
+            args, token_embedding, context[0],
             zero_word_vectors_set=zero_word_vectors_words,
             logfile=os.path.join(args.logdir, 'analogy.tsv'))
 
