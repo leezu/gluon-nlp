@@ -128,7 +128,7 @@ def analogy_datasets(dataset_names):
     ]
 
 
-def similarity_dataset_split_categories(datasets, vocab,
+def similarity_dataset_split_categories(datasets, token_embedding,
                                         zero_word_vectors_set):
     """Split similarity datasets into parts.
 
@@ -159,12 +159,13 @@ def similarity_dataset_split_categories(datasets, vocab,
         )
 
         for sample in dataset:
-            if any(w not in vocab for w in sample[:2]):
+            if any(w not in token_embedding for w in sample[:2]):
                 dataset_dict["unknown"].append(sample)
-                if all(w not in vocab for w in sample[:2]):
+                if all(w not in token_embedding for w in sample[:2]):
                     dataset_dict["all_unknown"].append(sample)
-                elif any((w in vocab) and (w not in zero_word_vectors_set)
-                         for w in sample[:2]):
+                elif any(
+                    (w in token_embedding) and (w not in zero_word_vectors_set)
+                        for w in sample[:2]):
                     dataset_dict["unknown_dense_vector"].append(sample)
                 else:
                     dataset_dict["unknown_zero_vector"].append(sample)
@@ -183,7 +184,8 @@ def similarity_dataset_split_categories(datasets, vocab,
     return category_datasets
 
 
-def analogy_dataset_split_categories(datasets, vocab, zero_word_vectors_set):
+def analogy_dataset_split_categories(datasets, token_embedding,
+                                     zero_word_vectors_set):
     """Split similarity datasets into parts.
 
     Based on if a sample contains only known words, known words but of which
@@ -208,11 +210,12 @@ def analogy_dataset_split_categories(datasets, vocab, zero_word_vectors_set):
             unknown_zero_vector=[],  # All known words have a zero vector
         )
         for sample in dataset:
-            if any(w not in vocab for w in sample):
-                if all(w not in vocab for w in sample[:2]):
+            if any(w not in token_embedding for w in sample):
+                if all(w not in token_embedding for w in sample[:2]):
                     dataset_dict["all_unknown"].append(sample)
-                elif any((w in vocab) and (w not in zero_word_vectors_set)
-                         for w in sample[:2]):
+                elif any(
+                    (w in token_embedding) and (w not in zero_word_vectors_set)
+                        for w in sample[:2]):
                     dataset_dict["unknown_dense_vector"].append(sample)
                 else:
                     dataset_dict["unknown_zero_vector"].append(sample)
@@ -244,12 +247,12 @@ def get_tokens_in_evaluation_datasets(args):
     return tokens
 
 
-def evaluate_similarity(args, token_embedding, ctx, vocab,
-                        zero_word_vectors_set={}, logfile=None, global_step=0):
+def evaluate_similarity(args, token_embedding, ctx, zero_word_vectors_set={},
+                        logfile=None, global_step=0):
     """Evaluate on specified similarity datasets."""
 
     datasets = similarity_dataset_split_categories(
-        similarity_datasets(args.similarity_datasets), vocab,
+        similarity_datasets(args.similarity_datasets), token_embedding,
         zero_word_vectors_set)
 
     for similarity_function in args.similarity_functions:
@@ -283,8 +286,8 @@ def evaluate_similarity(args, token_embedding, ctx, vocab,
                        len(dataset_coded), num_dropped, global_step)
 
 
-def evaluate_analogy(args, token_embedding, ctx, vocab,
-                     zero_word_vectors_set={}, logfile=None, global_step=0):
+def evaluate_analogy(args, token_embedding, ctx, zero_word_vectors_set={},
+                     logfile=None, global_step=0):
     """Evaluate on specified analogy datasets.
 
     The analogy task is an open vocabulary task, make sure to pass a
@@ -292,7 +295,8 @@ def evaluate_analogy(args, token_embedding, ctx, vocab,
 
     """
     datasets = analogy_dataset_split_categories(
-        analogy_datasets(args.analogy_datasets), vocab, zero_word_vectors_set)
+        analogy_datasets(args.analogy_datasets), token_embedding,
+        zero_word_vectors_set)
     exclude_question_words = not args.analogy_dont_exclude_question_words
     for analogy_function in args.analogy_functions:
         evaluator = nlp.embedding.evaluation.WordEmbeddingAnalogy(
