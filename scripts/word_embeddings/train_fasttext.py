@@ -82,6 +82,8 @@ def parse_args():
     group.add_argument('--wiki-language', type=str, default='text8',
                        help='Language of wiki dump.')
     group.add_argument('--wiki-date', help='Date of wiki dump.')
+    group.add_argument('--max-words', type=int,
+                       help='Maximum number of words to train on.')
 
     # Computation options
     group = parser.add_argument_group('Computation arguments')
@@ -453,6 +455,9 @@ def train(args):
 
     num_update = 0
     for epoch in range(args.epochs):
+        if args.max_words and num_update > args.max_words:
+            break
+
         bucketing_split = 16
         batches = nlp.data.ContextStream(
             stream=data, batch_size=args.batch_size * bucketing_split
@@ -473,6 +478,9 @@ def train(args):
         for i, batch in enumerate(batches):
             progress = (epoch * num_tokens + i * args.batch_size) / \
                 (args.epochs * num_tokens)
+
+            if args.max_words and num_update > args.max_words:
+                break
 
             if args.model.lower() == 'skipgram':
                 if args.ngram_buckets:
