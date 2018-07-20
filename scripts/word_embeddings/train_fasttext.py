@@ -674,16 +674,16 @@ def train(args):
                 with print_time('evaluate'):
                     evaluate(args, embedding, vocab, num_update)
 
+    # Save params
+    with print_time('save'):
+        save(args, embedding, embedding_out, vocab)
+
     # Evaluate
     with print_time('mx.nd.waitall()'):
         mx.nd.waitall()
     with print_time('evaluate'):
         evaluate(args, embedding, vocab, num_update,
                  eval_analogy=not args.no_eval_analogy)
-
-    # Save params
-    with print_time('save'):
-        save(args, embedding, embedding_out, vocab)
 
 
 def evaluate(args, embedding, vocab, global_step, eval_analogy=False):
