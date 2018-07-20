@@ -668,6 +668,9 @@ def evaluate(args, embedding, vocab, global_step, eval_analogy=False):
     context = get_context(args)
     mx.nd.waitall()
 
+    # Move embedding parameters temporarily to CPU to save GPU memory
+    embedding.collect_params().reset_ctx(mx.cpu())
+
     token_embedding = nlp.embedding.TokenEmbedding(unknown_token=None,
                                                    allow_extend=True)
     token_embedding[eval_tokens] = embedding[eval_tokens]
@@ -689,6 +692,9 @@ def evaluate(args, embedding, vocab, global_step, eval_analogy=False):
             args, token_embedding, context[0], vocab,
             zero_word_vectors_set=zero_word_vectors_words,
             logfile=os.path.join(args.logdir, 'analogy.tsv'))
+
+    # Move embedding parameters back to GPU
+    embedding.collect_params().reset_ctx(context)
 
 
 def log(args, kwargs):
