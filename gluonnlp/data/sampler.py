@@ -550,6 +550,7 @@ class ContextSampler(Sampler):
     window : int, default 5
         The maximum context size.
     reduce_window_size_randomly : bool, default True
+    shuffle : bool, default True
 
     Attributes
     ----------
@@ -560,10 +561,11 @@ class ContextSampler(Sampler):
     """
 
     def __init__(self, coded, batch_size, window=5,
-                 reduce_window_size_randomly=True):
+                 reduce_window_size_randomly=True, shuffle=True):
         self.batch_size = batch_size
         self.window = window
         self.reduce_window_size_randomly = reduce_window_size_randomly
+        self._shuffle = shuffle
         coded = [c for c in coded if len(c) > 1]
         self._sentence_boundaries = np.cumsum([len(s) for s in coded])
         self.num_samples = self._sentence_boundaries[-1]
@@ -582,7 +584,8 @@ class ContextSampler(Sampler):
         for center, context, mask in _context_generator(
                 self._coded, self._sentence_boundaries, self.window,
                 self.batch_size,
-                random_window_size=self.reduce_window_size_randomly):
+                random_window_size=self.reduce_window_size_randomly,
+                shuffle=self._shuffle):
             yield nd.array(center), nd.array(context), nd.array(mask)
 
 
@@ -597,31 +600,28 @@ def _get_sentence_start_end(sentence_boundaries, sentence_pointer):
 
 
 @numba_njit
-def _context_generator(coded_sentences, sentence_boundaries, window,
-                       batch_size, random_window_size):
-    word_pointer = 0
+def _context_generator(sentences, sentence_boundaries, window, batch_size,
+                       random_window_size, shuffle):
     max_length = 2 * window
-    while True:
-        batch_size = min(batch_size, len(coded_sentences) - word_pointer)
-        center = np.expand_dims(
-            coded_sentences[word_pointer:word_pointer + batch_size],
-            -1).astype(np.float32)
-        context = np.zeros((batch_size, max_length), dtype=np.int_)
-        mask = np.zeros((batch_size, max_length), dtype=np.int_)
 
-        for i in prange(batch_size):
-            context_ = _get_context(word_pointer + i, coded_sentences,
-                                    sentence_boundaries, window,
-                                    random_window_size)
-            context[i, :len(context_)] = context_
-            mask[i, :len(context_)] = 1
+    center = np.expand_dims(sentences.astype(np.int_), -1)
+    assert len(center.shape) == 2
+    context = np.zeros((len(sentences), max_length), dtype=np.int_)
+    mask = np.zeros((len(sentences), max_length), dtype=np.int_)
 
-        word_pointer += batch_size
+    for i in prange(len(sentences)):
+        context_ = _get_context(i, sentences, sentence_boundaries, window,
+                                random_window_size)
+        context[i, :len(context_)] = context_
+        mask[i, :len(context_)] = 1
 
-        yield center, context, mask
+    indices = np.arange(len(sentences))
+    if shuffle:
+        np.random.shuffle(indices)
 
-        if word_pointer >= sentence_boundaries[-1]:
-            break
+    for i in range(0, len(sentences), batch_size):
+        yield (center[i:i + batch_size], context[i:i + batch_size],
+               mask[i:i + batch_size])
 
 
 @numba_njit

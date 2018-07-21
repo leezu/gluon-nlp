@@ -404,6 +404,7 @@ def train(args):
             stream=data, batch_size=args.batch_size * bucketing_split
             if args.ngram_buckets else args.batch_size,
             p_discard=idx_to_pdiscard, window_size=args.window)
+        batches = nlp.data.PrefetchingStream(batches, worker_type='process')
         if args.ngram_buckets:
             # For fastText training, create batches such that subwords used in
             # that batch are of similar length
