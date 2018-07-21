@@ -100,6 +100,8 @@ def parse_args():
         help='Disable static memory allocation for HybridBlocks.')
     group.add_argument('--no-sparse-grad', action='store_true',
                        help='Disable sparse gradient support.')
+    group.add_argument('--no-lazy-update', action='store_true',
+                       help='Disable lazy parameter update for sparse gradient.')
 
     # Model
     group = parser.add_argument_group('Model arguments')
@@ -352,6 +354,11 @@ def train(args):
             list(embedding.character_embedding.collect_params().values()),
             len(subword_function))
 
+    if args.no_lazy_update:
+        trainer_emb_in._optimizer.lazy_update = False
+        trainer_emb_out._optimizer.lazy_update = False
+        trainer_subwords._optimizer.lazy_update = False
+
     if args.subword_network.lower() in ['fasttext', 'highwaycnn']:
         minlength = 1
         if hasattr(embedding, 'subwordminlength'):
@@ -559,10 +566,12 @@ def train(args):
                     trainer_subwords._optimizer.lazy_update = False
             trainer_emb_in.step(batch_size=1)
             trainer_emb_out.step(batch_size=1)
-            trainer_emb_in._optimizer.lazy_update = True
+            if not args.no_lazy_update:
+                trainer_emb_in._optimizer.lazy_update = True
             if args.subword_network.lower() in ['fasttext', 'highwaycnn']:
                 trainer_subwords.step(batch_size=1)
-                trainer_subwords._optimizer.lazy_update = True
+                if not args.no_lazy_update:
+                    trainer_subwords._optimizer.lazy_update = True
 
             # Logging
             log_wc += loss.shape[0]
