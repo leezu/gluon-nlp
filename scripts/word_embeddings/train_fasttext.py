@@ -389,6 +389,35 @@ def train(args):
             subwords, subwords_mask = get_subwords_masks(
                 unique.astype(int), minlength)
 
+            # Force update of parameters needed for forward pass
+            # No-op if parameter was updated during the last iteration.
+            # Otherwise equivalent to the parameter being updated with a 0
+            # gradient during the last iteration.
+            if ('proximal' in args.optimizer.lower()
+                    and trainer_emb_in._optimizer.num_update > 0):
+                word_fake_grad = mx.nd.sparse.row_sparse_array(
+                    (mx.nd.zeros((len(unique), args.emsize)), unique),
+                    shape=embedding.embedding.weight.shape)
+                word_weight = embedding.embedding.weight
+                word_weight.grad()[:] = word_fake_grad
+                word_weight.data()._fresh_grad = True
+                trainer_emb_in._optimizer._index_update_count[0] -= 1
+                trainer_emb_in._optimizer.num_update -= 1
+                trainer_emb_in.step(batch_size=1)
+            if ('proximal' in args.subword_sparse_optimizer.lower()
+                    and trainer_emb_in._optimizer.num_update > 0):
+                ngram_unique = np.unique(subwords)
+                subword_fake_grad = mx.nd.sparse.row_sparse_array(
+                    (mx.nd.zeros(
+                        (len(ngram_unique), args.emsize)), ngram_unique),
+                    shape=embedding.subword_embedding.embedding.weight.shape)
+                subword_weight = embedding.subword_embedding.embedding.weight
+                subword_weight.grad()[:] = subword_fake_grad
+                subword_weight.data()._fresh_grad = True
+                trainer_subwords._optimizer._index_update_count[0] -= 1
+                trainer_subwords._optimizer.num_update -= 1
+                trainer_subwords.step(batch_size=1)
+
             return (centers.as_in_context(context[0]),
                     context_negatives.as_in_context(context[0]),
                     masks.as_in_context(context[0]),
