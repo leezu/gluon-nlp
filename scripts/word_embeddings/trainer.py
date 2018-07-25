@@ -45,6 +45,8 @@ def add_parameters(parser):
 
     group = parser.add_argument_group('Word level optimization arguments')
     group.add_argument('--optimizer', type=str, default='adagrad')
+    group.add_argument('--adagrad-decay-states', action='store_true')
+    group.add_argument('--adagrad-decay-factor', type=float, default=0.9)
     group.add_argument('--lr', type=float, default=0.1,
                        help='Learning rate for embeddings matrix.')
     group.add_argument('--lr-schedule', type=str, default='linear',
@@ -96,6 +98,9 @@ def get_embedding_in_trainer(args, params, num_words):
             kwargs = dict(
                 clip_group_gradient_norm=args.clip_group_gradient_norm,
                 **kwargs)
+        elif args.optimizer.lower() == 'proximaladagrad':
+            kwargs = dict(decay_states=args.adagrad_decay_states,
+                          decay_factor=args.adagrad_decay_factor, **kwargs)
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.optimizer, **kwargs)
     elif args.optimizer.lower() == 'sgd':
@@ -143,6 +148,9 @@ def _get_sparse_subword_trainer(args, params, num_subword_units):
             kwargs = dict(
                 clip_group_gradient_norm=args.clip_group_gradient_norm,
                 **kwargs)
+        elif args.optimizer.lower() == 'proximaladagrad':
+            kwargs = dict(decay_states=args.adagrad_decay_states,
+                          decay_factor=args.adagrad_decay_factor, **kwargs)
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.subword_sparse_optimizer, **kwargs)
     elif args.subword_sparse_optimizer.lower() in ['sgd', 'adagrad']:
@@ -284,24 +292,34 @@ class ProximalAdagrad(mx.optimizer.Optimizer):
     ----------
     l2_regularization_strength : float
        Strength of L2 regularization.
-    lazy_update : bool, optional
+    lazy_update : bool, default True
        Default is True. If True, lazy updates are applied \
        if the storage types of weight and grad are both ``row_sparse``.
+    decay_states : bool, default False
+       Standard Adagrad accumulates the square sum of all past gradients. If
+       True, exponentially decay past gradients as in RMSProp.
+    decay_factor : float, default 0.9
+       Factor by which to decay state. New state is decay_factor * state +
+       (1-decay_factor) * gradient**2
 
     """
 
     def __init__(self, l2_regularization_strength=0.0, lazy_update=True,
-                 float_stable_epsilon=1e-5, bisection_epsilon=1e-3, **kwargs):
+                 float_stable_epsilon=1e-5, bisection_epsilon=1e-3,
+                 decay_states=False, decay_factor=0.9, **kwargs):
         super(ProximalAdagrad, self).__init__(**kwargs)
         self.l2_regularization_strength = l2_regularization_strength
         self.lazy_update = lazy_update
         self.float_stable_eps = float_stable_epsilon
         self.bisection_eps = bisection_epsilon
+        self.decay_states = decay_states
+        assert 0 <= decay_factor < 1
+        self.decay_factor = decay_factor
 
     def create_state(self, index, weight):
         history = zeros(weight.shape, weight.context, stype=weight.stype)
         last_update_buffer = None
-        if self.l2_regularization_strength != 0.0:
+        if self.l2_regularization_strength != 0.0 or self.decay_states:
             last_update_buffer = full(
                 shape=(weight.shape[0], ), val=self.num_update,
                 ctx=weight.context)
@@ -327,8 +345,13 @@ class ProximalAdagrad(mx.optimizer.Optimizer):
                 l2_regularization_strength=self.l2_regularization_strength,
                 rescale_grad=self.rescale_grad,
                 float_stable_epsilon=self.float_stable_eps,
-                bisection_epsilon=self.bisection_eps)
+                bisection_epsilon=self.bisection_eps,
+                decay_states=self.decay_states, decay_factor=self.decay_factor)
         elif is_sparse:
+            if self.decay_states:
+                raise RuntimeError(
+                    'Internal error. If self.decay_states, '
+                    'last_update_buffer should not have been None.')
             sparse.adagrad_update(weight, grad, history, out=weight, lr=lr,
                                   wd=wd, rescale_grad=self.rescale_grad,
                                   epsilon=self.float_stable_eps)
@@ -336,7 +359,11 @@ class ProximalAdagrad(mx.optimizer.Optimizer):
             grad = grad * self.rescale_grad
             if self.clip_gradient is not None:
                 grad = clip(grad, -self.clip_gradient, self.clip_gradient)
-            history[:] += square(grad)
+            if not self.decay_states:
+                history[:] += square(grad)
+            else:
+                history[:] += history * self.decay_factor + square(grad) * (
+                    1 - self.decay_factor)
             div = grad / sqrt(history + self.float_stable_eps)
             weight[:] += (div + weight * wd) * -lr
 

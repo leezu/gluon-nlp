@@ -618,16 +618,16 @@ def train(args):
             loss.backward()
             num_update += len(label)
 
-            if 'adagrad' not in args.optimizer.lower():
+            if 'adagrad' not in args.optimizer.lower() \
+               or args.adagrad_decay_states:
                 trainer_emb_in.set_learning_rate(
                     max(0.0001, args.lr * (1 - progress)))
                 trainer_emb_out.set_learning_rate(
                     max(0.0001, args.lr * (1 - progress)))
 
-            if (args.subword_network.lower() == 'fasttext'
-                    and 'adagrad' not in args.subword_sparse_optimizer.lower()
-                ) or (args.subword_network.lower() == 'highwaycnn' and
-                      'adagrad' not in args.subword_dense_optimizer.lower()):
+            if args.subword_network.lower() in ['fasttext', 'highwaycnn'] \
+                    and ('adagrad' not in args.subword_sparse_optimizer.lower()
+                         or args.adagrad_decay_states):
                 trainer_subwords.set_learning_rate(
                     max(0.0001, args.subword_sparse_lr * (1 - progress)))
 
