@@ -125,6 +125,7 @@ def parse_args():
                        default=1E-4,
                        help='Frequent token subsampling constant.')
     group.add_argument('--seed', type=int, default=1, help='random seed')
+    group.add_argument('--no-zero-init', action='store_true')
 
     # Logging
     group = parser.add_argument_group('Logging arguments')
@@ -327,7 +328,8 @@ def train(args):
     embedding_out = nlp.model.train.SimpleEmbeddingModel(
         token_to_idx=vocab.token_to_idx,
         embedding_size=args.emsize,
-        weight_initializer=mx.init.Zero(),
+        weight_initializer=mx.init.Zero()
+        if not args.no_zero_init else mx.init.Uniform(scale=1 / args.emsize),
         sparse_grad=not args.no_sparse_grad,
     )
     loss_function = mx.gluon.loss.SigmoidBinaryCrossEntropyLoss()
