@@ -224,8 +224,8 @@ if __name__ == '__main__':
                             args_.max_vocab_size)
 
     similarity_results = evaluation.evaluate_similarity(
-        args_, token_embedding_, ctx, logfile=os.path.join(
+        args_, token_embedding_, ctx, known_tokens, logfile=os.path.join(
             args_.logdir, 'similarity{}.tsv'.format(name)))
     analogy_results = evaluation.evaluate_analogy(
-        args_, token_embedding_, ctx, logfile=os.path.join(
+        args_, token_embedding_, ctx, known_tokens, logfile=os.path.join(
             args_.logdir, 'analogy{}.tsv'.format(name)))

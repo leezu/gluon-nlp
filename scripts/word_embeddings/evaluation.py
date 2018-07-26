@@ -128,7 +128,7 @@ def analogy_datasets(dataset_names):
     ]
 
 
-def similarity_dataset_split_categories(datasets, token_embedding,
+def similarity_dataset_split_categories(datasets, known_tokens,
                                         zero_word_vectors_set):
     """Split similarity datasets into parts.
 
@@ -159,12 +159,12 @@ def similarity_dataset_split_categories(datasets, token_embedding,
         )
 
         for sample in dataset:
-            if any(w not in token_embedding for w in sample[:2]):
+            if any(w not in known_tokens for w in sample[:2]):
                 dataset_dict["unknown"].append(sample)
-                if all(w not in token_embedding for w in sample[:2]):
+                if all(w not in known_tokens for w in sample[:2]):
                     dataset_dict["all_unknown"].append(sample)
                 elif any(
-                    (w in token_embedding) and (w not in zero_word_vectors_set)
+                    (w in known_tokens) and (w not in zero_word_vectors_set)
                         for w in sample[:2]):
                     dataset_dict["unknown_dense_vector"].append(sample)
                 else:
@@ -184,7 +184,7 @@ def similarity_dataset_split_categories(datasets, token_embedding,
     return category_datasets
 
 
-def analogy_dataset_split_categories(datasets, token_embedding,
+def analogy_dataset_split_categories(datasets, known_tokens,
                                      zero_word_vectors_set):
     """Split similarity datasets into parts.
 
@@ -210,11 +210,11 @@ def analogy_dataset_split_categories(datasets, token_embedding,
             unknown_zero_vector=[],  # All known words have a zero vector
         )
         for sample in dataset:
-            if any(w not in token_embedding for w in sample):
-                if all(w not in token_embedding for w in sample[:2]):
+            if any(w not in known_tokens for w in sample):
+                if all(w not in known_tokens for w in sample[:2]):
                     dataset_dict["all_unknown"].append(sample)
                 elif any(
-                    (w in token_embedding) and (w not in zero_word_vectors_set)
+                    (w in known_tokens) and (w not in zero_word_vectors_set)
                         for w in sample[:2]):
                     dataset_dict["unknown_dense_vector"].append(sample)
                 else:
@@ -247,12 +247,12 @@ def get_tokens_in_evaluation_datasets(args):
     return tokens
 
 
-def evaluate_similarity(args, token_embedding, ctx, zero_word_vectors_set={},
-                        logfile=None, global_step=0):
+def evaluate_similarity(args, token_embedding, ctx, known_tokens,
+                        zero_word_vectors_set={}, logfile=None, global_step=0):
     """Evaluate on specified similarity datasets."""
 
     datasets = similarity_dataset_split_categories(
-        similarity_datasets(args.similarity_datasets), token_embedding,
+        similarity_datasets(args.similarity_datasets), known_tokens,
         zero_word_vectors_set)
 
     for similarity_function in args.similarity_functions:
@@ -286,8 +286,8 @@ def evaluate_similarity(args, token_embedding, ctx, zero_word_vectors_set={},
                        len(dataset_coded), num_dropped, global_step)
 
 
-def evaluate_analogy(args, token_embedding, ctx, zero_word_vectors_set={},
-                     logfile=None, global_step=0):
+def evaluate_analogy(args, token_embedding, ctx, known_tokens,
+                     zero_word_vectors_set={}, logfile=None, global_step=0):
     """Evaluate on specified analogy datasets.
 
     The analogy task is an open vocabulary task, make sure to pass a
@@ -295,7 +295,7 @@ def evaluate_analogy(args, token_embedding, ctx, zero_word_vectors_set={},
 
     """
     datasets = analogy_dataset_split_categories(
-        analogy_datasets(args.analogy_datasets), token_embedding,
+        analogy_datasets(args.analogy_datasets), known_tokens,
         zero_word_vectors_set)
     exclude_question_words = not args.analogy_dont_exclude_question_words
     for analogy_function in args.analogy_functions:
