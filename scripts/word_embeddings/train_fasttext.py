@@ -126,6 +126,7 @@ def parse_args():
                        help='Frequent token subsampling constant.')
     group.add_argument('--seed', type=int, default=1, help='random seed')
     group.add_argument('--no-zero-init', action='store_true')
+    group.add_argument('--no-bucketing', action='store_true')
 
     # Logging
     group = parser.add_argument_group('Logging arguments')
@@ -497,13 +498,13 @@ def train(args):
         if args.max_words and num_update > args.max_words:
             break
 
-        bucketing_split = 16
+        bucketing_split = 16 if not args.no_bucketing else 1
         batches = nlp.data.ContextStream(
             stream=data, batch_size=args.batch_size * bucketing_split
             if args.ngram_buckets else args.batch_size,
             p_discard=idx_to_pdiscard, window_size=args.window)
         batches = nlp.data.PrefetchingStream(batches, worker_type='process')
-        if args.ngram_buckets:
+        if args.ngram_buckets and not args.no_bucketing:
             # For fastText training, create batches such that subwords used in
             # that batch are of similar length
             batches = nlp.data.BucketingStream(
