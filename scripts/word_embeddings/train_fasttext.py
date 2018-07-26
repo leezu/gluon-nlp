@@ -128,6 +128,7 @@ def parse_args():
     # Optimization options
     group.add_argument('--seed', type=int, default=1, help='random seed')
     group.add_argument('--no-zero-init', action='store_true')
+    group.add_argument('--no-bucketing', action='store_true')
 
     # Logging
     group = parser.add_argument_group('Logging arguments')
@@ -545,11 +546,11 @@ def train(args):
 
         batches = itertools.chain.from_iterable(data)
 
-        if args.ngram_buckets:
+        if args.ngram_buckets and not args.no_bucketing:
             # For fastText training, create batches such that subwords used in
             # that batch are of similar length
-            batches = BucketingStream(
-                batches, bucketing_split, length_fn, bucketing_batchify_fn)
+            batches = BucketingStream(batches, bucketing_split, length_fn,
+                                      bucketing_batchify_fn)
 
         for i, batch in enumerate(batches):
             progress = (epoch * num_tokens + i * args.batch_size) / \
