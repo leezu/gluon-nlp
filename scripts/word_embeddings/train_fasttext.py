@@ -575,16 +575,29 @@ def train(args):
 
             if 'adagrad' not in args.optimizer.lower() \
                or args.adagrad_decay_states:
-                trainer_emb_in.set_learning_rate(
-                    max(0.0001, args.lr * (1 - progress)))
-                trainer_emb_out.set_learning_rate(
-                    max(0.0001, args.lr * (1 - progress)))
-
-            if args.subword_network.lower() in ['fasttext', 'highwaycnn'] \
-                    and ('adagrad' not in args.subword_sparse_optimizer.lower()
-                         or args.adagrad_decay_states):
-                trainer_subwords.set_learning_rate(
-                    max(0.0001, args.subword_sparse_lr * (1 - progress)))
+                if args.lr_schedule.lower() == 'linear':
+                    trainer_emb_in.set_learning_rate(
+                        max(0.0001, args.lr * (1 - progress)))
+                    trainer_emb_out.set_learning_rate(
+                        max(0.0001, args.lr * (1 - progress)))
+                    if args.subword_network.lower() in [
+                            'fasttext', 'highwaycnn'
+                    ]:
+                        trainer_subwords.set_learning_rate(
+                            max(0.0001,
+                                args.subword_sparse_lr * (1 - progress)))
+                elif args.lr_schedule.lower() == 'step':
+                    decay = args.lr_schedule_step_drop**math.floor(
+                        epoch / args.lr_schedule_step_size)
+                    trainer_emb_in.set_learning_rate(args.lr * decay)
+                    trainer_emb_out.set_learning_rate(args.lr * decay)
+                    if args.subword_network.lower() in [
+                            'fasttext', 'highwaycnn'
+                    ]:
+                        trainer_subwords.set_learning_rate(
+                            args.subword_sparse_lr * decay)
+                else:
+                    raise RuntimeError('Invalid learning rate schedule.')
 
             if (((i + 1) % args.log_interval == 0) or
                 (args.eval_interval and ((i + 1) % args.eval_interval == 0))):

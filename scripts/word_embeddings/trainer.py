@@ -51,6 +51,10 @@ def add_parameters(parser):
                        help='Learning rate for embeddings matrix.')
     group.add_argument('--lr-schedule', type=str, default='linear',
                        help='Learning rate schedule.')
+    group.add_argument('--lr-schedule-step-size', type=int, default=2,
+                       help='Step size for step learning rate schedule.')
+    group.add_argument('--lr-schedule-step-drop', type=float, default=0.5,
+                       help='Drop for step learning rate schedule.')
     group.add_argument(
         '--l2', type=float, default=1,
         help='Group sparsity regularization scale. '
