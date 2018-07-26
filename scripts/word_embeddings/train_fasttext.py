@@ -45,6 +45,7 @@ os.environ['MXNET_GPU_MEM_POOL_TYPE'] = 'Round'
 import argparse
 import itertools
 import logging
+import gc
 import random
 import math
 import sys
@@ -619,6 +620,8 @@ def train(args):
             log_wc += loss.shape[0]
             log_avg_loss += loss.mean()
             if (i + 1) % args.log_interval == 0:
+                gc.collect()  # Release CPU memory
+
                 # Forces waiting for computation by computing loss value
                 log_avg_loss = log_avg_loss.asscalar() / args.log_interval
                 wps = log_wc / (time.time() - log_start_time)
@@ -720,6 +723,7 @@ def evaluate(args, embedding, vocab, global_step, eval_analogy=False):
     mx.nd.waitall()
 
     # Move embedding parameters temporarily to CPU to save GPU memory
+    gc.collect()  # Release CPU memory
     embedding.collect_params().reset_ctx(mx.cpu())
 
     token_embedding = nlp.embedding.TokenEmbedding(unknown_token=None,
