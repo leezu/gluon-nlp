@@ -165,8 +165,13 @@ if __name__ == '__main__':
     if not args_.embedding_path:
         print('Loading embedding ', args_.embedding_name, ' from ',
               args_.embedding_source)
-        token_embedding = nlp.embedding.create(args_.embedding_name,
-                                               source=args_.embedding_source)
+        if args_.embedding_name.lower() == 'fasttext':
+            token_embedding = nlp.embedding.create(
+                args_.embedding_name, source=args_.embedding_source,
+                load_ngrams=True)
+        else:
+            token_embedding = nlp.embedding.create(
+                args_.embedding_name, source=args_.embedding_source)
         name = '-' + args_.embedding_name + '-' + args_.embedding_source
     else:
         token_embedding = load_embedding_from_path(args_)
