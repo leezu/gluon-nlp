@@ -132,20 +132,22 @@ def load_embedding_from_path(args):
                 nlp.model.train.FasttextEmbeddingModel.load_fasttext_format(
                     args.embedding_path)
 
-        # Add OOV words if the token_embedding can impute them
-        token_set = set()
-        token_set.update(
-            filter(lambda x: x in model,
-                   evaluation.get_tokens_in_evaluation_datasets(args)))
+        embedding = nlp.embedding.TokenEmbedding(
+            unknown_token=None, unknown_lookup=model, allow_extend=True,
+            unknown_autoextend=True)
 
-        # OOV words will be imputed and added to the
-        # token_embedding.idx_to_token etc.
+        if args.analogy_datasets:
+            # Pre-compute all words in vocabulary in case of analogy evaluation
+            idx_to_token = list(model.token_to_idx.keys())
+        else:
+            idx_to_token = [
+                t for t in evaluation.get_tokens_in_evaluation_datasets(args)
+                if t in model.token_to_idx
+            ]
+
         with utils.print_time('compute vectors from subwords '
-                              'for {} words.'.format(len(token_set))):
-            embedding = nlp.embedding.TokenEmbedding(unknown_token=None,
-                                                     allow_extend=True)
-            idx_to_tokens = [t for t in token_set if t in model]
-            embedding[idx_to_tokens] = model[idx_to_tokens]
+                              'for {} words.'.format(len(idx_to_token))):
+            embedding[idx_to_token] = model[idx_to_token]
 
     else:
         embedding = nlp.embedding.TokenEmbedding.from_file(args.embedding_path)
@@ -168,14 +170,24 @@ if __name__ == '__main__':
         if args_.embedding_name.lower() == 'fasttext':
             token_embedding = nlp.embedding.create(
                 args_.embedding_name, source=args_.embedding_source,
-                load_ngrams=True)
+                load_ngrams=True, allow_extend=True, unknown_autoextend=True)
+            eval_tokens = evaluation.get_tokens_in_evaluation_datasets(args_)
+            known_tokens = set(token_embedding.idx_to_token)
+            # Auto-extend token_embedding with unknown extra eval tokens
+            token_embedding[list(eval_tokens - known_tokens)]
         else:
+            known_tokens = set(token_embedding.idx_to_token)
             token_embedding = nlp.embedding.create(
                 args_.embedding_name, source=args_.embedding_source)
         name = '-' + args_.embedding_name + '-' + args_.embedding_source
     else:
         token_embedding = load_embedding_from_path(args_)
-        name = ''
+        known_tokens = set(token_embedding.idx_to_token)
+        # Auto-extend token_embedding with unknown extra eval tokens
+        if token_embedding.unknown_lookup is not None:
+            eval_tokens = evaluation.get_tokens_in_evaluation_datasets(args_)
+            token_embedding[list(eval_tokens - known_tokens)]
+            name = ''
 
     if args_.max_vocab_size:
         if args_.embedding_path and '.bin' in args_.embedding_path:
@@ -191,8 +203,8 @@ if __name__ == '__main__':
         }
 
     similarity_results = evaluation.evaluate_similarity(
-        args_, token_embedding, ctx, logfile=os.path.join(
+        args_, token_embedding, ctx, known_tokens, logfile=os.path.join(
             args_.logdir, 'similarity{}.tsv'.format(name)))
     analogy_results = evaluation.evaluate_analogy(
-        args_, token_embedding, ctx, logfile=os.path.join(
+        args_, token_embedding, ctx, known_tokens, logfile=os.path.join(
             args_.logdir, 'analogy{}.tsv'.format(name)))
