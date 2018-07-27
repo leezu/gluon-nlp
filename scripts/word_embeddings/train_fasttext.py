@@ -103,6 +103,9 @@ def parse_args():
                        help='Disable sparse gradient support.')
     group.add_argument('--no-lazy-update', action='store_true',
                        help='Disable lazy parameter update for sparse gradient.')
+    group.add_argument(
+        '--eval-only', type=str, help='Only evaluate the model '
+        'stored at `--eval-only path`')
 
     # Model
     group = parser.add_argument_group('Model arguments')
@@ -198,7 +201,10 @@ def get_train_data(args):
         1 - math.sqrt(args.frequent_token_subsampling / (count / sum_counts))
         for count in idx_to_counts
     ]
+    return data, negatives_sampler, vocab, idx_to_pdiscard, sum_counts
 
+
+def get_subword_functionality(args, vocab):
     if args.subword_network.lower() == 'fasttext':
         with print_time('prepare subwords'):
             subword_function = nlp.vocab.create_subword_function(
@@ -217,9 +223,7 @@ def get_train_data(args):
                     'You should filter out very long words '
                     'to avoid memory issues.'.format(max_subwordidxs_len))
 
-        return (data, negatives_sampler, vocab, subword_function,
-                get_subwords_masks, idx_to_pdiscard, sum_counts,
-                idx_to_subwordidxs)
+        return subword_function, get_subwords_masks, idx_to_subwordidxs
     elif args.subword_network.lower() == 'highwaycnn':
         with print_time('prepare characters / byte mapping'):
             subword_function = nlp.vocab.create_subword_function(
@@ -230,12 +234,9 @@ def get_train_data(args):
             get_subwords_masks = get_subwords_masks_factory(idx_to_subwordidxs)
             max_subwordidxs_len = max(len(s) for s in idx_to_subwordidxs)
 
-        return (data, negatives_sampler, vocab, subword_function,
-                get_subwords_masks, idx_to_pdiscard, sum_counts,
-                idx_to_subwordidxs)
+        return subword_function, get_subwords_masks, idx_to_subwordidxs
     else:
-        return data, negatives_sampler, vocab, idx_to_pdiscard, sum_counts
-
+        raise ValueError('Invalid --subword-network specified.')
 
 def get_subwords_masks_factory(idx_to_subwordidxs):
     idx_to_subwordidxs = [
@@ -294,10 +295,12 @@ def save(args, embedding, embedding_out, vocab):
 ###############################################################################
 def train(args):
     """Training helper."""
+    data, negatives_sampler, vocab, idx_to_pdiscard, num_tokens = \
+        get_train_data(args)
     if args.subword_network.lower() == 'fasttext':
-        data, negatives_sampler, vocab, subword_function, \
-            get_subwords_masks, idx_to_pdiscard, num_tokens, \
-            idx_to_subwordidxs = get_train_data(args)
+        subword_function, get_subwords_masks, idx_to_subwordidxs = \
+            get_subword_functionality(args, vocab)
+
         embedding = nlp.model.train.FasttextEmbeddingModel(
             token_to_idx=vocab.token_to_idx,
             subword_function=subword_function,
@@ -306,10 +309,9 @@ def train(args):
             sparse_grad=not args.no_sparse_grad,
         )
     elif args.subword_network.lower() == 'highwaycnn':
+        subword_function, get_subwords_masks, idx_to_subwordidxs = \
+            get_subword_functionality(args, vocab)
         import blocks
-        data, negatives_sampler, vocab, subword_function, \
-            get_subwords_masks, idx_to_pdiscard, num_tokens, \
-            idx_to_subwordidxs = get_train_data(args)
         embedding = blocks.HighwayCNNEmbeddingModel(
             token_to_idx=vocab.token_to_idx,
             subword_function=subword_function,
@@ -318,8 +320,6 @@ def train(args):
             sparse_grad=not args.no_sparse_grad,
         )
     else:
-        data, negatives_sampler, vocab, \
-            idx_to_pdiscard, num_tokens = get_train_data(args)
         embedding = nlp.model.train.SimpleEmbeddingModel(
             token_to_idx=vocab.token_to_idx,
             embedding_size=args.emsize,
@@ -731,7 +731,9 @@ def evaluate(args, embedding, vocab, global_step, eval_analogy=False):
 
     token_embedding = nlp.embedding.TokenEmbedding(unknown_token=None,
                                                    allow_extend=True)
-    token_embedding[eval_tokens] = embedding[eval_tokens]
+    with print_time('compute vectors from subwords '
+                    'for {} words.'.format(len(eval_tokens))):
+        token_embedding[eval_tokens] = embedding[eval_tokens]
 
     # Compute set of vectors with zero word embedding
     zero_word_vectors_words = [
@@ -777,6 +779,67 @@ def log(args, kwargs):
         f.write('\t'.join((str(v) for v in kwargs.values())) + '\n')
 
 
+def load_and_evaluate(args):
+    """Training helper."""
+    with open(os.path.join(args.eval_only, 'vocab.json'), 'r') as f:
+        with print_time('load vocab from file'):
+            vocab = nlp.Vocab.from_json(f.read())
+
+    with print_time('initialize model'):
+        if args.subword_network.lower() == 'fasttext':
+            subword_function, get_subwords_masks, idx_to_subwordidxs = \
+                get_subword_functionality(args, vocab)
+            embedding = nlp.model.train.FasttextEmbeddingModel(
+                token_to_idx=vocab.token_to_idx,
+                subword_function=subword_function,
+                embedding_size=args.emsize,
+                weight_initializer=mx.init.Uniform(scale=1 / args.emsize),
+                sparse_grad=not args.no_sparse_grad,
+               )
+        elif args.subword_network.lower() == 'highwaycnn':
+            subword_function, get_subwords_masks, idx_to_subwordidxs = \
+                get_subword_functionality(args, vocab)
+            import blocks
+            embedding = blocks.HighwayCNNEmbeddingModel(
+                token_to_idx=vocab.token_to_idx,
+                subword_function=subword_function,
+                embedding_size=args.emsize,
+                character_embedding_size=15,
+                sparse_grad=not args.no_sparse_grad,
+               )
+        else:
+            embedding = nlp.model.train.SimpleEmbeddingModel(
+                token_to_idx=vocab.token_to_idx,
+                embedding_size=args.emsize,
+                weight_initializer=mx.init.Uniform(scale=1 / args.emsize),
+                sparse_grad=not args.no_sparse_grad,
+               )
+        embedding_out = nlp.model.train.SimpleEmbeddingModel(
+            token_to_idx=vocab.token_to_idx,
+            embedding_size=args.emsize,
+            weight_initializer=mx.init.Zero()
+            if not args.no_zero_init else mx.init.Uniform(scale=1 / args.emsize),
+            sparse_grad=not args.no_sparse_grad,
+           )
+
+    context = get_context(args)
+    embedding.initialize(ctx=context)
+    embedding_out.initialize(ctx=context)
+    if not args.no_hybridize:
+        embedding.hybridize(static_alloc=not args.no_static_alloc)
+        embedding_out.hybridize(static_alloc=not args.no_static_alloc)
+
+    with print_time('load parameters from file'):
+        embedding.collect_params().load(
+            os.path.join(args.eval_only, 'embedding.params'))
+        embedding_out.collect_params().load(
+            os.path.join(args.eval_only, 'embedding_out.params'))
+
+    with print_time('evaluate'):
+        evaluate(args, embedding, vocab, 0,
+                 eval_analogy=not args.no_eval_analogy)
+
+
 if __name__ == '__main__':
     logging.basicConfig()
     logging.getLogger().setLevel(logging.INFO)
@@ -790,4 +853,7 @@ if __name__ == '__main__':
 
     os.makedirs(args_.logdir, exist_ok=True)
 
-    train(args_)
+    if not args_.eval_only:
+        train(args_)
+    else:
+        load_and_evaluate(args_)
