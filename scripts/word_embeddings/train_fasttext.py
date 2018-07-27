@@ -896,10 +896,12 @@ if __name__ == '__main__':
     args_ = parse_args()
 
     # Check logdir
-    if os.path.exists(args_.logdir):
-        newlogdir = tempfile.mkdtemp(dir=args_.logdir)
-        logging.warning(f'{args_.logdir} exists. Using {newlogdir}')
-        args_.logdir = newlogdir
+    if os.path.exists(args_.logdir) and \
+       set(os.listdir(args_.logdir)) - set(("stderr.log", "stdout.log")):
+            newlogdir = tempfile.mkdtemp(dir=args_.logdir)
+            logging.warning(f'{args_.logdir} exists and contains '
+                            f'more than stderr/stdout.log. Using {newlogdir}')
+            args_.logdir = newlogdir
 
     os.makedirs(args_.logdir, exist_ok=True)
 
