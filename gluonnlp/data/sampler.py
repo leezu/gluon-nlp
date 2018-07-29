@@ -581,12 +581,21 @@ class ContextSampler(Sampler):
                 'with numba, but numba is not installed. '
                 'Consider "pip install numba" for significant speed-ups.')
 
-        for center, context, mask in _context_generator(
-                self._coded, self._sentence_boundaries, self.window,
-                self.batch_size,
-                random_window_size=self.reduce_window_size_randomly,
-                shuffle=self._shuffle):
-            yield nd.array(center), nd.array(context), nd.array(mask)
+        context, mask = _context_generator(
+            self._coded, self._sentence_boundaries, self.window,
+            self.batch_size,
+            random_window_size=self.reduce_window_size_randomly,
+            seed=random.getrandbits(32))
+        context, mask = nd.array(context), nd.array(mask)
+        center = nd.array(self._coded).expand_dims(-1)
+        assert len(center.shape) == 2
+        indices = nd.arange(len(center))
+        if self._shuffle:
+            indices = nd.shuffle(indices)
+
+        for i in range(0, len(self._coded), self.batch_size):
+            end = min(i + self.batch_size, len(center))
+            yield (center[i:end], context[i:end], mask[i:end])
 
 
 @numba_njit
@@ -601,37 +610,32 @@ def _get_sentence_start_end(sentence_boundaries, sentence_pointer):
 
 @numba_njit
 def _context_generator(sentences, sentence_boundaries, window, batch_size,
-                       random_window_size, shuffle):
+                       random_window_size, seed):
     max_length = 2 * window
 
-    center = np.expand_dims(sentences.astype(np.int_), -1)
-    assert len(center.shape) == 2
     context = np.zeros((len(sentences), max_length), dtype=np.int_)
     mask = np.zeros((len(sentences), max_length), dtype=np.int_)
 
     for i in prange(len(sentences)):
         context_ = _get_context(i, sentences, sentence_boundaries, window,
-                                random_window_size)
+                                random_window_size, seed)
         context[i, :len(context_)] = context_
         mask[i, :len(context_)] = 1
 
-    indices = np.arange(len(sentences))
-    if shuffle:
-        np.random.shuffle(indices)
+    return context, mask
 
-    for i in range(0, len(sentences), batch_size):
-        yield (center[i:i + batch_size], context[i:i + batch_size],
-               mask[i:i + batch_size])
 
 
 @numba_njit
 def _get_context(center_index, sentences, sentence_boundaries, window_size,
-                 random_window_size):
+                 random_window_size, seed):
     """Compute the context with respect to a center word in a sentence.
 
     Takes an numpy array of flattened sentences and their boundaries.
 
     """
+    random.seed(seed + center_index)
+
     sentence_index = np.searchsorted(sentence_boundaries, center_index)
     sentence_start, sentence_end = _get_sentence_start_end(
         sentence_boundaries, sentence_index)
