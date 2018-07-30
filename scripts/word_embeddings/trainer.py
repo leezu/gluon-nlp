@@ -107,12 +107,15 @@ def get_embedding_in_trainer(args, params, num_words):
                           decay_factor=args.adagrad_decay_factor, **kwargs)
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.optimizer, **kwargs)
-    elif args.optimizer.lower() == 'sgd':
+    elif args.optimizer.lower() in ['sgd', 'adam', 'adagrad']:
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.optimizer, learning_rate=args.lr)
-    elif args.optimizer.lower() == 'adagrad':
+    elif args.optimizer.lower() == 'rmsprop':
         optimizer = mx.optimizer.Optimizer.create_optimizer(
-            args.optimizer, learning_rate=args.lr)
+            args.optimizer, learning_rate=args.lr, gamma1=args.adagrad_decay_factor)
+    elif args.optimizer.lower() == 'adadelta':
+        optimizer = mx.optimizer.Optimizer.create_optimizer(
+            args.optimizer)
     else:
         logging.error('Unsupported optimizer')
         sys.exit(1)
@@ -121,9 +124,15 @@ def get_embedding_in_trainer(args, params, num_words):
 
 def get_embedding_out_trainer(args, params):
     # Ignore group sparsity for context matrix
-    if 'sgd' in args.optimizer.lower():
+    if args.optimizer.lower() in ['sgd', 'adam']:
         optimizer = mx.optimizer.Optimizer.create_optimizer(
-            'sgd', learning_rate=args.lr)
+            args.optimizer, learning_rate=args.lr)
+    elif args.optimizer.lower() == 'rmsprop':
+        optimizer = mx.optimizer.Optimizer.create_optimizer(
+            args.optimizer, learning_rate=args.lr, gamma1=args.adagrad_decay_factor)
+    elif args.optimizer.lower() == 'adadelta':
+        optimizer = mx.optimizer.Optimizer.create_optimizer(
+            args.optimizer)
     elif 'adagrad' in args.optimizer.lower():
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             'adagrad', learning_rate=args.lr)
@@ -157,10 +166,16 @@ def _get_sparse_subword_trainer(args, params, num_subword_units):
                           decay_factor=args.adagrad_decay_factor, **kwargs)
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.subword_sparse_optimizer, **kwargs)
-    elif args.subword_sparse_optimizer.lower() in ['sgd', 'adagrad']:
+    elif args.subword_sparse_optimizer.lower() in ['sgd', 'adagrad', 'adam']:
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.subword_sparse_optimizer,
             learning_rate=args.subword_sparse_lr)
+    elif args.optimizer.lower() == 'adadelta':
+        optimizer = mx.optimizer.Optimizer.create_optimizer(
+            args.optimizer)
+    elif args.optimizer.lower() == 'rmsprop':
+        optimizer = mx.optimizer.Optimizer.create_optimizer(
+            args.optimizer, learning_rate=args.lr, gamma1=args.adagrad_decay_factor)
     else:
         logging.error('Unsupported optimizer')
         sys.exit(1)
