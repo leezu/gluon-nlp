@@ -46,6 +46,7 @@ def add_parameters(parser):
     group = parser.add_argument_group('Word level optimization arguments')
     group.add_argument('--optimizer', type=str, default='adagrad')
     group.add_argument('--adagrad-decay-states', action='store_true')
+    group.add_argument('--adagrad-lazy-decay', action='store_true')
     group.add_argument('--adagrad-decay-factor', type=float, default=0.9)
     group.add_argument('--lr', type=float, default=0.1,
                        help='Learning rate for embeddings matrix.')
@@ -104,7 +105,9 @@ def get_embedding_in_trainer(args, params, num_words):
                 **kwargs)
         elif args.optimizer.lower() == 'proximaladagrad':
             kwargs = dict(decay_states=args.adagrad_decay_states,
-                          decay_factor=args.adagrad_decay_factor, **kwargs)
+                          decay_factor=args.adagrad_decay_factor,
+                          lazy_decay=args.adagrad_lazy_decay,
+                          **kwargs)
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.optimizer, **kwargs)
     elif args.optimizer.lower() in ['sgd', 'adam', 'adagrad']:
@@ -163,6 +166,7 @@ def _get_sparse_subword_trainer(args, params, num_subword_units):
                 **kwargs)
         elif args.optimizer.lower() == 'proximaladagrad':
             kwargs = dict(decay_states=args.adagrad_decay_states,
+                          lazy_decay=args.adagrad_lazy_decay,
                           decay_factor=args.adagrad_decay_factor, **kwargs)
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.subword_sparse_optimizer, **kwargs)
@@ -317,6 +321,9 @@ class ProximalAdagrad(mx.optimizer.Optimizer):
     decay_states : bool, default False
        Standard Adagrad accumulates the square sum of all past gradients. If
        True, exponentially decay past gradients as in RMSProp.
+    lazy_decay : bool, default False
+       If True, exponentially decay past gradients as in RMSProp but only for
+       iterations where gradient is explicitly part of the sparse update.
     decay_factor : float, default 0.9
        Factor by which to decay state. New state is decay_factor * state +
        (1-decay_factor) * gradient**2
@@ -325,13 +332,14 @@ class ProximalAdagrad(mx.optimizer.Optimizer):
 
     def __init__(self, l2_regularization_strength=0.0, lazy_update=True,
                  float_stable_epsilon=1e-5, bisection_epsilon=1e-3,
-                 decay_states=False, decay_factor=0.9, **kwargs):
+                 decay_states=False, lazy_decay=False,  decay_factor=0.9, **kwargs):
         super(ProximalAdagrad, self).__init__(**kwargs)
         self.l2_regularization_strength = l2_regularization_strength
         self.lazy_update = lazy_update
         self.float_stable_eps = float_stable_epsilon
         self.bisection_eps = bisection_epsilon
         self.decay_states = decay_states
+        self.lazy_decay = lazy_decay
         assert 0 <= decay_factor < 1
         self.decay_factor = decay_factor
 
@@ -365,7 +373,8 @@ class ProximalAdagrad(mx.optimizer.Optimizer):
                 rescale_grad=self.rescale_grad,
                 float_stable_epsilon=self.float_stable_eps,
                 bisection_epsilon=self.bisection_eps,
-                decay_states=self.decay_states, decay_factor=self.decay_factor)
+                decay_states=self.decay_states, lazy_decay=self.lazy_decay,
+                decay_factor=self.decay_factor)
         elif is_sparse:
             if self.decay_states:
                 raise RuntimeError(
@@ -381,6 +390,9 @@ class ProximalAdagrad(mx.optimizer.Optimizer):
             if not self.decay_states:
                 history[:] += square(grad)
             else:
+                if self.lazy_decay:
+                    raise ValueError(
+                        'lazy_decay can only be True for sparse updates.')
                 history[:] += history * self.decay_factor + square(grad) * (
                     1 - self.decay_factor)
             div = grad / sqrt(history + self.float_stable_eps)
