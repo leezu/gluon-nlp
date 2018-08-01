@@ -186,7 +186,10 @@ if __name__ == '__main__':
         # Auto-extend token_embedding with unknown extra eval tokens
         if token_embedding.unknown_lookup is not None:
             eval_tokens = evaluation.get_tokens_in_evaluation_datasets(args_)
-            token_embedding[list(eval_tokens - known_tokens)]
+            token_embedding[[
+                t for t in eval_tokens - known_tokens
+                if t in token_embedding.unknown_lookup
+            ]]
             name = ''
 
     if args_.max_vocab_size:
