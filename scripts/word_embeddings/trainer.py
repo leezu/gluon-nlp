@@ -31,7 +31,7 @@ import mxnet as mx
 import numpy as np
 from mxnet import gluon
 from mxnet.ndarray import (NDArray, zeros, full, clip, sqrt, square, sparse,
-                           proximal_sgd_update, sgd_update,
+                           mean, proximal_sgd_update, sgd_update,
                            proximal_adagrad_update)
 
 import utils
@@ -45,6 +45,7 @@ def add_parameters(parser):
 
     group = parser.add_argument_group('Word level optimization arguments')
     group.add_argument('--optimizer', type=str, default='adagrad')
+    group.add_argument('--adagrad-groupwise-lr', action='store_true')
     group.add_argument('--adagrad-decay-states', action='store_true')
     group.add_argument('--adagrad-lazy-decay', action='store_true')
     group.add_argument('--adagrad-decay-factor', type=float, default=0.9)
@@ -105,6 +106,7 @@ def get_embedding_in_trainer(args, params, num_words):
                 **kwargs)
         elif args.optimizer.lower() == 'proximaladagrad':
             kwargs = dict(decay_states=args.adagrad_decay_states,
+                          groupwise_lr=args.adagrad_groupwise_lr,
                           decay_factor=args.adagrad_decay_factor,
                           lazy_decay=args.adagrad_lazy_decay,
                           **kwargs)
@@ -126,19 +128,24 @@ def get_embedding_in_trainer(args, params, num_words):
 
 
 def get_embedding_out_trainer(args, params):
-    # Ignore group sparsity for context matrix
-    if args.optimizer.lower() in ['sgd', 'adam']:
+    if  args.optimizer.lower() == 'proximaladagrad':
+        optimizer = mx.optimizer.Optimizer.create_optimizer(
+            args.optimizer, learning_rate=args.lr,
+            # Ignore group sparsity for context matrix
+            l2_regularization_strength=0,
+            groupwise_lr=args.adagrad_groupwise_lr,
+            decay_states=args.adagrad_decay_states,
+            decay_factor=args.adagrad_decay_factor,
+            lazy_decay=args.adagrad_lazy_decay)
+    elif args.optimizer.lower() in ['sgd', 'adam', 'adagrad']:
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.optimizer, learning_rate=args.lr)
     elif args.optimizer.lower() == 'rmsprop':
         optimizer = mx.optimizer.Optimizer.create_optimizer(
-            args.optimizer, learning_rate=args.lr, gamma1=args.adagrad_decay_factor)
+            args.optimizer, learning_rate=args.lr,
+            gamma1=args.adagrad_decay_factor)
     elif args.optimizer.lower() == 'adadelta':
-        optimizer = mx.optimizer.Optimizer.create_optimizer(
-            args.optimizer)
-    elif 'adagrad' in args.optimizer.lower():
-        optimizer = mx.optimizer.Optimizer.create_optimizer(
-            'adagrad', learning_rate=args.lr)
+        optimizer = mx.optimizer.Optimizer.create_optimizer(args.optimizer)
     else:
         logging.error('Unsupported optimizer')
         sys.exit(1)
@@ -166,6 +173,7 @@ def _get_sparse_subword_trainer(args, params, num_subword_units):
                 **kwargs)
         elif args.optimizer.lower() == 'proximaladagrad':
             kwargs = dict(decay_states=args.adagrad_decay_states,
+                          groupwise_lr=args.adagrad_groupwise_lr,
                           lazy_decay=args.adagrad_lazy_decay,
                           decay_factor=args.adagrad_decay_factor, **kwargs)
         optimizer = mx.optimizer.Optimizer.create_optimizer(
@@ -332,7 +340,8 @@ class ProximalAdagrad(mx.optimizer.Optimizer):
 
     def __init__(self, l2_regularization_strength=0.0, lazy_update=True,
                  float_stable_epsilon=1e-5, bisection_epsilon=1e-3,
-                 decay_states=False, lazy_decay=False,  decay_factor=0.9, **kwargs):
+                 decay_states=False, lazy_decay=False, decay_factor=0.9,
+                 groupwise_lr=False, **kwargs):
         super(ProximalAdagrad, self).__init__(**kwargs)
         self.l2_regularization_strength = l2_regularization_strength
         self.lazy_update = lazy_update
@@ -342,11 +351,20 @@ class ProximalAdagrad(mx.optimizer.Optimizer):
         self.lazy_decay = lazy_decay
         assert 0 <= decay_factor < 1
         self.decay_factor = decay_factor
+        self.groupwise_lr = groupwise_lr
+        if self.groupwise_lr:
+            assert not self.decay_states
 
     def create_state(self, index, weight):
-        history = zeros(weight.shape, weight.context, stype=weight.stype)
+        if self.groupwise_lr:
+            assert len(weight.shape) == 2
+            history = zeros((weight.shape[0], 1), weight.context,
+                            stype=weight.stype)
+        else:
+            history = zeros(weight.shape, weight.context, stype=weight.stype)
         last_update_buffer = None
-        if self.l2_regularization_strength != 0.0 or self.decay_states:
+        if (self.l2_regularization_strength != 0.0 or self.decay_states
+                or self.groupwise_lr):
             last_update_buffer = full(
                 shape=(weight.shape[0], ), val=self.num_update,
                 ctx=weight.context)
@@ -365,16 +383,13 @@ class ProximalAdagrad(mx.optimizer.Optimizer):
         last_update_buffer = state[1]
         if last_update_buffer is not None:
             proximal_adagrad_update(
-                weight, grad, history, out=weight,
-                last_update_buffer=last_update_buffer,
-                lazy_update=self.lazy_update, lr=lr,
-                current_update=self.num_update,
+                weight, grad, history, out=weight, last_update_buffer=last_update_buffer,
+                lazy_update=self.lazy_update, lr=lr, current_update=self.num_update,
                 l2_regularization_strength=self.l2_regularization_strength,
-                rescale_grad=self.rescale_grad,
-                float_stable_epsilon=self.float_stable_eps,
-                bisection_epsilon=self.bisection_eps,
-                decay_states=self.decay_states, lazy_decay=self.lazy_decay,
-                decay_factor=self.decay_factor)
+                rescale_grad=self.rescale_grad, float_stable_epsilon=self.float_stable_eps,
+                bisection_epsilon=self.bisection_eps, decay_states=self.decay_states,
+                lazy_decay=self.lazy_decay, decay_factor=self.decay_factor,
+                groupwise_lr=self.groupwise_lr)
         elif is_sparse:
             if self.decay_states:
                 raise RuntimeError(
@@ -383,6 +398,13 @@ class ProximalAdagrad(mx.optimizer.Optimizer):
             sparse.adagrad_update(weight, grad, history, out=weight, lr=lr,
                                   wd=wd, rescale_grad=self.rescale_grad,
                                   epsilon=self.float_stable_eps)
+        elif self.groupwise_lr:
+            grad = grad * self.rescale_grad
+            if self.clip_gradient is not None:
+                grad = clip(grad, -self.clip_gradient, self.clip_gradient)
+            history[:] += mean(square(grad), axis=1, keepdims=True)
+            div = grad / sqrt(history + self.float_stable_eps)
+            weight[:] += (div + weight * wd) * -lr
         else:
             grad = grad * self.rescale_grad
             if self.clip_gradient is not None:
