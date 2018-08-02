@@ -655,11 +655,10 @@ def train(args):
 
             if (((i + 1) % args.log_interval == 0) or
                 (args.eval_interval and ((i + 1) % args.eval_interval == 0))):
-                if 'proximal' in args.optimizer:
+                if 'proximal' in args.optimizer and not args.adagrad_groupwise_lr:  # TODO cast grad to dense and add dense support to optimizer as eager update
                     trainer_emb_in._optimizer.lazy_update = False
-                if (args.subword_network.lower() == 'fasttext'
-                        and 'proximal' in args.subword_sparse_optimizer):
-                    trainer_subwords._optimizer.lazy_update = False
+                    if args.subword_network.lower() == 'fasttext':
+                        trainer_subwords._optimizer.lazy_update = False
             trainer_emb_in.step(batch_size=1)
             trainer_emb_out.step(batch_size=1)
             if not args.no_lazy_update:
