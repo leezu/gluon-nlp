@@ -301,7 +301,7 @@ class BigRNN(Block):
     encoder_dropout : float
         Dropout rate to use for encoder output.
     sparse_weight : bool
-        Whether to use RewSparseNDArray for weights of input and output embeddings.
+        Whether to use RowSparseNDArray for weights of input and output embeddings.
     sparse_grad : bool
         Whether to use RowSparseNDArray for the gradients w.r.t.
         weights of input and output embeddings.

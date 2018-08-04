@@ -27,8 +27,9 @@ import struct
 import warnings
 
 import numpy as np
+
 from mxnet import cpu, nd
-from mxnet.gluon import Block, HybridBlock, nn
+from mxnet.gluon import Block, HybridBlock, contrib, nn
 
 from ...base import _str_types
 from ...vocab.subwords import create_subword_function
@@ -104,29 +105,58 @@ class SimpleEmbeddingModel(EmbeddingModel):
         Dimension of embeddings.
     weight_initializer : mxnet.initializer.Initializer, optional
         Initializer for the embeddings matrix.
+    sparse_weight : bool, default False
+        Whether to use RowSparseNDArray for weights of input and output
+        embeddings.
     sparse_grad : bool, default True
-        Specifies mxnet.gluon.nn.Embedding sparse_grad argument.
+        Whether to use RowSparseNDArray for the gradients w.r.t.
+        weights of input and output embeddings.
     dtype : str, default 'float32'
         dtype argument passed to gluon.nn.Embedding
 
+    .. note: If `sparse_grad` is set to True, the gradient w.r.t input and output
+             embeddings will be sparse. Only a subset of optimizers support
+             sparse gradients, including SGD, AdaGrad and Adam.
+             By default `lazy_update` is turned on for these optimizers,
+             which may perform differently from standard updates.
+             For more details, please check the Optimization API at:
+             https://mxnet.incubator.apache.org/api/python/optimization/optimization.html
+
+    .. note: If `sparse_weight` is set to True, the parameters in the embedding block and
+             decoder block will be stored in row_sparse format, which helps reduce memory
+             consumption and communication overhead during multi-GPU training. However,
+             sparse parameters cannot be shared with other blocks, nor could we hybridize
+             a block containinng sparse parameters.
     """
 
     def __init__(self, token_to_idx, embedding_size, weight_initializer=None,
-                 sparse_grad=True, dtype='float32', **kwargs):
+                 sparse_weight=False, sparse_grad=True, dtype='float32',
+                 **kwargs):
         assert isinstance(token_to_idx, dict)
 
         super(SimpleEmbeddingModel,
               self).__init__(embedding_size=embedding_size, **kwargs)
         self.token_to_idx = token_to_idx
+        self.embedding_size = embedding_size
         self.weight_initializer = weight_initializer
+        self.sparse_weight = sparse_weight
         self.sparse_grad = sparse_grad
+        if self.sparse_weight:
+            assert self.sparse_grad, 'Dense grad with sparse weight is not supported.'
         self.dtype = dtype
 
         with self.name_scope():
-            self.embedding = nn.Embedding(
-                len(token_to_idx), embedding_size,
-                weight_initializer=weight_initializer, sparse_grad=sparse_grad,
-                dtype=dtype)
+            prefix = 'embedding0_'
+            if self.sparse_weight:
+                # sparse embedding has both sparse weight and sparse grad
+                self.embedding = contrib.nn.SparseEmbedding(
+                    len(token_to_idx), self.embedding_size, prefix=prefix,
+                    dtype=dtype)
+            else:
+                self.embedding = nn.Embedding(
+                    len(token_to_idx), embedding_size,
+                    weight_initializer=weight_initializer, prefix=prefix,
+                    sparse_grad=sparse_grad, dtype=dtype)
 
     def __call__(self, words, wordsmask=None):
         return super(SimpleEmbeddingModel, self).__call__(words, wordsmask)
@@ -184,6 +214,29 @@ class SimpleEmbeddingModel(EmbeddingModel):
             return vecs
 
 
+class _SparseWeightMaskedSumEmbedding(Block):
+    def __init__(self, num_tokens, embedding_size, weight_initializer=None,
+                 sparse_grad=True, dtype='float32', **kwargs):
+        super(_SparseWeightMaskedSumEmbedding, self).__init__(**kwargs)
+        self.num_tokens = num_tokens
+        self.embedding_size = embedding_size
+        self.weight_initializer = weight_initializer
+        self.sparse_grad = sparse_grad
+        self.dtype = dtype
+
+        with self.name_scope():
+            prefix = 'embedding0_'
+            # sparse embedding has both sparse weight and sparse grad
+            self.embedding = contrib.nn.SparseEmbedding(
+                num_tokens, self.embedding_size, prefix=prefix, dtype=dtype)
+
+    def forward(self, x, mask):
+        #pylint: disable=arguments-differ
+        mask = nd.expand_dims(mask, axis=-1)
+        masked_embeddings = nd.broadcast_mul(self.embedding(x), mask)
+        return nd.sum(masked_embeddings, axis=-2)
+
+
 class _MaskedSumEmbedding(HybridBlock):
     def __init__(self, num_tokens, embedding_size, weight_initializer=None,
                  sparse_grad=True, dtype='float32', **kwargs):
@@ -195,10 +248,11 @@ class _MaskedSumEmbedding(HybridBlock):
         self.dtype = dtype
 
         with self.name_scope():
+            prefix = 'embedding0_'
             self.embedding = nn.Embedding(
                 num_tokens, embedding_size,
-                weight_initializer=weight_initializer, sparse_grad=sparse_grad,
-                dtype=dtype)
+                weight_initializer=weight_initializer, prefix=prefix,
+                sparse_grad=sparse_grad, dtype=dtype)
 
     def hybrid_forward(self, F, x, mask):
         #pylint: disable=arguments-differ
@@ -231,34 +285,65 @@ class FasttextEmbeddingModel(EmbeddingModel):
         Dimension of embeddings.
     weight_initializer : mxnet.initializer.Initializer, optional
         Initializer for the embeddings and subword embeddings matrix.
+    sparse_weight : bool, default False
+        Whether to use RowSparseNDArray for weights of input and output
+        embeddings.
     sparse_grad : bool, default True
-        Specifies mxnet.gluon.nn.Embedding sparse_grad argument.
+        Whether to use RowSparseNDArray for the gradients w.r.t.
+        weights of input and output embeddings.
     dtype : str, default 'float32'
         dtype argument passed to gluon.nn.Embedding
 
+    .. note: If `sparse_grad` is set to True, the gradient w.r.t input and output
+             embeddings will be sparse. Only a subset of optimizers support
+             sparse gradients, including SGD, AdaGrad and Adam.
+             By default `lazy_update` is turned on for these optimizers,
+             which may perform differently from standard updates.
+             For more details, please check the Optimization API at:
+             https://mxnet.incubator.apache.org/api/python/optimization/optimization.html
+
+    .. note: If `sparse_weight` is set to True, the parameters in the embedding block and
+             decoder block will be stored in row_sparse format, which helps reduce memory
+             consumption and communication overhead during multi-GPU training. However,
+             sparse parameters cannot be shared with other blocks, nor could we hybridize
+             a block containinng sparse parameters.
     """
     FASTTEXT_FILEFORMAT_MAGIC = 793712314
 
     def __init__(self, token_to_idx, subword_function, embedding_size,
-                 weight_initializer=None, sparse_grad=True, dtype='float32',
-                 **kwargs):
+                 weight_initializer=None, sparse_weight=True, sparse_grad=True,
+                 dtype='float32', **kwargs):
         super(FasttextEmbeddingModel,
               self).__init__(embedding_size=embedding_size, **kwargs)
         self.token_to_idx = token_to_idx
         self.subword_function = subword_function
         self.weight_initializer = weight_initializer
         self.sparse_grad = sparse_grad
+        self.sparse_weight = sparse_weight
+        if self.sparse_weight:
+            assert self.sparse_grad, 'Dense grad with sparse weight is not supported.'
         self.dtype = dtype
 
         with self.name_scope():
-            self.embedding = nn.Embedding(
-                len(token_to_idx), embedding_size,
-                weight_initializer=weight_initializer, sparse_grad=sparse_grad,
-                dtype=dtype)
-            self.subword_embedding = _MaskedSumEmbedding(
-                len(subword_function), embedding_size,
-                weight_initializer=weight_initializer, sparse_grad=sparse_grad,
-                dtype=dtype)
+            prefix = 'embedding0_'
+            if self.sparse_weight:
+                # sparse embedding has both sparse weight and sparse grad
+                self.embedding = contrib.nn.SparseEmbedding(
+                    len(token_to_idx), self.embedding_size, prefix=prefix,
+                    dtype=dtype)
+                self.subword_embedding = _SparseWeightMaskedSumEmbedding(
+                    len(subword_function), embedding_size,
+                    weight_initializer=weight_initializer,
+                    sparse_grad=sparse_grad, dtype=dtype)
+            else:
+                self.embedding = nn.Embedding(
+                    len(token_to_idx), embedding_size,
+                    weight_initializer=weight_initializer, prefix=prefix,
+                    sparse_grad=sparse_grad, dtype=dtype)
+                self.subword_embedding = _MaskedSumEmbedding(
+                    len(subword_function), embedding_size,
+                    weight_initializer=weight_initializer,
+                    sparse_grad=sparse_grad, dtype=dtype)
 
     @classmethod
     def load_fasttext_format(cls, path, ctx=cpu(), **kwargs):
