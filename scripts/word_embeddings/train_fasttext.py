@@ -106,6 +106,8 @@ def parse_args():
     group.add_argument(
         '--eval-only', type=str, help='Only evaluate the model '
         'stored at `--eval-only path`')
+    group.add_argument('--distributed', action='store_true',
+                       help='Use distributed kvstore for training.')
 
     # Model
     group = parser.add_argument_group('Model arguments')
@@ -160,7 +162,7 @@ def get_train_data(args):
     """Helper function to get training data."""
 
     def text8():
-        data = nlp.data.Text8(segment='train')
+        data = nlp.data.Text8(segment='train')[:1000]
         counter = nlp.data.count_tokens(itertools.chain.from_iterable(data))
         vocab = nlp.Vocab(counter, unknown_token=None, padding_token=None,
                           bos_token=None, eos_token=None, min_freq=5)
@@ -274,11 +276,21 @@ def save(args, embedding, embedding_out, vocab):
     os.replace(path, os.path.join(args.logdir, 'vocab.json'))
 
     # save list of words with zero word vectors
-    zero_word_vectors_words = sorted([
-        vocab.idx_to_token[idx] for idx in np.where((
-            embedding.embedding.weight.data().norm(axis=1) < 1E-5
-        ).asnumpy())[0]
-    ])
+    if not args.distributed:
+        zero_word_vectors_words = sorted([
+            vocab.idx_to_token[idx] for idx in np.where((
+                embedding.embedding.weight.data().norm(axis=1) < 1E-5
+            ).asnumpy())[0]
+        ])
+    else:
+        ctx = embedding.embedding.weight.list_ctx()[0]
+        zero_word_vectors_words = sorted([
+            vocab.idx_to_token[idx]
+            for idx in np.where((embedding.embedding.weight.row_sparse_data(
+                mx.nd.arange(embedding.embedding.weight.shape[0],
+                             ctx=ctx)).norm(axis=1) < 1E-5).asnumpy())[0]
+        ])
+
     with open(path, 'w') as f:
         f.write('\n'.join(zero_word_vectors_words))
     os.replace(path, os.path.join(args.logdir, 'zero_word_vectors_words.txt'))
@@ -306,12 +318,14 @@ def train(args):
             subword_function=subword_function,
             embedding_size=args.emsize,
             weight_initializer=mx.init.Uniform(scale=1 / args.emsize),
+            sparse_weight=args.distributed,
             sparse_grad=not args.no_sparse_grad,
         )
     elif args.subword_network.lower() == 'highwaycnn':
         subword_function, get_subwords_masks, idx_to_subwordidxs = \
             get_subword_functionality(args, vocab)
         import blocks
+        assert not args.distributed
         embedding = blocks.HighwayCNNEmbeddingModel(
             token_to_idx=vocab.token_to_idx,
             subword_function=subword_function,
@@ -324,6 +338,7 @@ def train(args):
             token_to_idx=vocab.token_to_idx,
             embedding_size=args.emsize,
             weight_initializer=mx.init.Uniform(scale=1 / args.emsize),
+            sparse_weight=args.distributed,
             sparse_grad=not args.no_sparse_grad,
         )
     embedding_out = nlp.model.train.SimpleEmbeddingModel(
@@ -331,6 +346,7 @@ def train(args):
         embedding_size=args.emsize,
         weight_initializer=mx.init.Zero()
         if not args.no_zero_init else mx.init.Uniform(scale=1 / args.emsize),
+        sparse_weight=args.distributed,
         sparse_grad=not args.no_sparse_grad,
     )
     loss_function = mx.gluon.loss.SigmoidBinaryCrossEntropyLoss()
@@ -342,21 +358,34 @@ def train(args):
         embedding.hybridize(static_alloc=not args.no_static_alloc)
         embedding_out.hybridize(static_alloc=not args.no_static_alloc)
 
-    trainer_emb_in = trainer.get_embedding_in_trainer(
-        args, embedding.embedding.collect_params(), len(vocab))
-    trainer_emb_out = trainer.get_embedding_out_trainer(
-        args, embedding_out.collect_params())
+    kvstore = 'dist_device_async' if args.distributed else 'device'
 
-    if args.subword_network.lower() == 'fasttext':
-        trainer_subwords = trainer.get_subword_trainer(
-            args, embedding.subword_embedding.collect_params(),
-            len(subword_function))
-    elif args.subword_network.lower() == 'highwaycnn':
-        trainer_subwords = trainer.get_subword_trainer(
-            args,
-            list(embedding.cnn.collect_params().values()) +
-            list(embedding.character_embedding.collect_params().values()),
-            len(subword_function))
+    params_emb_in = list(embedding.embedding.collect_params().values())
+    params_emb_out = list(embedding_out.collect_params().values())
+    optimizer_emb_in = trainer.get_embedding_in_optimizer(args, len(vocab))
+    optimizer_emb_out = trainer.get_embedding_out_optimizer(args)
+    trainer_emb_in = mx.gluon.Trainer(params_emb_in, optimizer_emb_in,
+                                      kvstore=kvstore)
+    trainer_emb_out = mx.gluon.Trainer(params_emb_out, optimizer_emb_out,
+                                       kvstore=kvstore)
+
+    if args.subword_network:
+        if args.subword_network.lower() == 'fasttext':
+            optimizer_subwords = trainer.get_subword_optimizer(
+                args, len(subword_function))
+            params_subwords = list(
+                embedding.subword_embedding.collect_params().values())
+        elif args.subword_network.lower() == 'highwaycnn':
+            optimizer_subwords = trainer.get_subword_optimizer(
+                args, len(subword_function))
+            params_subwords = list(embedding.cnn.collect_params().values()) + \
+                list(embedding.character_embedding.collect_params().values())
+        else:
+            print('Unsupported subword network {args.subword_network}'.format(
+                args.subword_network))
+
+        trainer_subwords = mx.gluon.Trainer(
+            params_subwords, optimizer_subwords, kvstore=kvstore)
 
     if args.no_lazy_update:
         trainer_emb_in._optimizer.lazy_update = False
@@ -402,12 +431,17 @@ def train(args):
                 word_fake_grad = mx.nd.sparse.row_sparse_array(
                     (mx.nd.zeros((len(unique), args.emsize)), unique),
                     shape=embedding.embedding.weight.shape)
-                word_weight = embedding.embedding.weight
-                word_weight.grad()[:] = word_fake_grad
-                word_weight.data()._fresh_grad = True
-                trainer_emb_in._optimizer._index_update_count[0] -= 1
-                trainer_emb_in._optimizer.num_update -= 1
-                trainer_emb_in.step(batch_size=1)
+                if not args.distributed:
+                    word_weight = embedding.embedding.weight
+                    word_weight.grad()[:] = word_fake_grad
+                    word_weight.data()._fresh_grad = True
+                    trainer_emb_in._optimizer._index_update_count[0] -= 1
+                    trainer_emb_in._optimizer.num_update -= 1
+                    trainer_emb_in.step(batch_size=1)
+                else:
+                    pass
+                    # TODO Push empty grad to kvstore
+                    # word_weight.row_sparse_data(mx.nd.array(unique, ctx=mx.gpu())).data
             if ('proximal' in args.subword_sparse_optimizer.lower()
                     and trainer_emb_in._optimizer.num_update > 0):
                 ngram_unique = np.unique(subwords)
@@ -415,12 +449,16 @@ def train(args):
                     (mx.nd.zeros(
                         (len(ngram_unique), args.emsize)), ngram_unique),
                     shape=embedding.subword_embedding.embedding.weight.shape)
-                subword_weight = embedding.subword_embedding.embedding.weight
-                subword_weight.grad()[:] = subword_fake_grad
-                subword_weight.data()._fresh_grad = True
-                trainer_subwords._optimizer._index_update_count[0] -= 1
-                trainer_subwords._optimizer.num_update -= 1
-                trainer_subwords.step(batch_size=1)
+                if not args.distributed:
+                    subword_weight = embedding.subword_embedding.embedding.weight
+                    subword_weight.grad()[:] = subword_fake_grad
+                    subword_weight.data()._fresh_grad = True
+                    trainer_subwords._optimizer._index_update_count[0] -= 1
+                    trainer_subwords._optimizer.num_update -= 1
+                    trainer_subwords.step(batch_size=1)
+                else:
+                    pass
+                    # TODO Push empty grad to kvstore
 
             return (centers.as_in_context(context[0]),
                     context_negatives.as_in_context(context[0]),
@@ -577,46 +615,64 @@ def train(args):
             loss.backward()
             num_update += len(label)
 
-            if 'adagrad' not in args.optimizer.lower() \
-               or args.adagrad_decay_states:
-                if args.lr_schedule.lower() == 'linear':
-                    trainer_emb_in.set_learning_rate(
-                        max(0.0001, args.lr * (1 - progress)))
-                    trainer_emb_out.set_learning_rate(
-                        max(0.0001, args.lr * (1 - progress)))
-                    if args.subword_network.lower() in [
-                            'fasttext', 'highwaycnn'
-                    ]:
-                        trainer_subwords.set_learning_rate(
-                            max(0.0001,
-                                args.subword_sparse_lr * (1 - progress)))
-                elif args.lr_schedule.lower() == 'step':
-                    decay = args.lr_schedule_step_drop**math.floor(
-                        epoch / args.lr_schedule_step_size)
-                    trainer_emb_in.set_learning_rate(args.lr * decay)
-                    trainer_emb_out.set_learning_rate(args.lr * decay)
-                    if args.subword_network.lower() in [
-                            'fasttext', 'highwaycnn'
-                    ]:
-                        trainer_subwords.set_learning_rate(
-                            args.subword_sparse_lr * decay)
-                else:
-                    raise RuntimeError('Invalid learning rate schedule.')
+            if not args.distributed:
+                if 'adagrad' not in args.optimizer.lower() \
+                   or args.adagrad_decay_states:
+                    if args.lr_schedule.lower() == 'linear':
+                        trainer_emb_in.set_learning_rate(
+                            max(0.0001, args.lr * (1 - progress)))
+                        trainer_emb_out.set_learning_rate(
+                            max(0.0001, args.lr * (1 - progress)))
+                        if args.subword_network.lower() in [
+                                'fasttext', 'highwaycnn'
+                        ]:
+                            trainer_subwords.set_learning_rate(
+                                max(0.0001,
+                                    args.subword_sparse_lr * (1 - progress)))
+                    elif args.lr_schedule.lower() == 'step':
+                        decay = args.lr_schedule_step_drop**math.floor(
+                            epoch / args.lr_schedule_step_size)
+                        trainer_emb_in.set_learning_rate(args.lr * decay)
+                        trainer_emb_out.set_learning_rate(args.lr * decay)
+                        if args.subword_network.lower() in [
+                                'fasttext', 'highwaycnn'
+                        ]:
+                            trainer_subwords.set_learning_rate(
+                                args.subword_sparse_lr * decay)
+                    else:
+                        raise RuntimeError('Invalid learning rate schedule.')
 
-            if (((i + 1) % args.log_interval == 0) or
-                (args.eval_interval and ((i + 1) % args.eval_interval == 0))):
-                if 'proximal' in args.optimizer and not args.adagrad_groupwise_lr:  # TODO cast grad to dense and add dense support to optimizer as eager update
-                    trainer_emb_in._optimizer.lazy_update = False
-                    if args.subword_network.lower() == 'fasttext':
-                        trainer_subwords._optimizer.lazy_update = False
-            trainer_emb_in.step(batch_size=1)
-            trainer_emb_out.step(batch_size=1)
-            if not args.no_lazy_update:
-                trainer_emb_in._optimizer.lazy_update = True
-            if args.subword_network.lower() in ['fasttext', 'highwaycnn']:
-                trainer_subwords.step(batch_size=1)
+                if (((i + 1) % args.log_interval == 0)
+                        or (args.eval_interval and
+                            ((i + 1) % args.eval_interval == 0))):
+                    if 'proximal' in args.optimizer and not args.adagrad_groupwise_lr:  # TODO cast grad to dense and add dense support to optimizer as eager update
+                        trainer_emb_in._optimizer.lazy_update = False
+                        if args.subword_network.lower() == 'fasttext':
+                            trainer_subwords._optimizer.lazy_update = False
+                trainer_emb_in.step(batch_size=1)
+                trainer_emb_out.step(batch_size=1)
                 if not args.no_lazy_update:
-                    trainer_subwords._optimizer.lazy_update = True
+                    trainer_emb_in._optimizer.lazy_update = True
+                if args.subword_network.lower() in ['fasttext', 'highwaycnn']:
+                    trainer_subwords.step(batch_size=1)
+                    if not args.no_lazy_update:
+                        trainer_subwords._optimizer.lazy_update = True
+            else:
+                assert trainer_emb_in._update_on_kvstore
+                assert trainer_emb_out._update_on_kvstore
+                assert trainer_subwords._update_on_kvstore
+                for param_idx, param in enumerate(params_emb_in):
+                    if param.grad_req != 'null':
+                        trainer_emb_in._kvstore.push(param_idx, param.list_grad(),
+                                                     priority=param_idx)
+                for param_idx, param in enumerate(params_emb_out):
+                    if param.grad_req != 'null':
+                        trainer_emb_out._kvstore.push(param_idx, param.list_grad(),
+                                                      priority=param_idx)
+                for param_idx, param in enumerate(params_subwords):
+                    if param.grad_req != 'null':
+                        trainer_subwords._kvstore.push(param_idx, param.list_grad(),
+                                                       priority=param_idx)
 
             # Logging
             log_wc += loss.shape[0]
@@ -627,7 +683,11 @@ def train(args):
                 # Forces waiting for computation by computing loss value
                 log_avg_loss = log_avg_loss.asscalar() / args.log_interval
                 wps = log_wc / (time.time() - log_start_time)
-                vector_norm = embedding.embedding.weight.data().norm(axis=1)
+                if not args.distributed:
+                    vector_norm = embedding.embedding.weight.data().norm(axis=1)
+                else:
+                    vector_norm = embedding.embedding.weight.row_sparse_data(
+                        mx.nd.arange(len(vocab), ctx=context[0])).norm(axis=1)
                 # Due to subsampling, the overall number of batches is an upper bound
                 logging.info(
                     '[Epoch {} Batch {}/{}] loss={:.4f}, '
@@ -657,9 +717,15 @@ def train(args):
                 )
 
                 if args.subword_network.lower() == 'fasttext':
-                    subword_idx_to_vec = embedding.subword_embedding.embedding.weight.data(
+                    if not args.distributed:
+                        subword_idx_to_vec = embedding.subword_embedding.embedding.weight.data(
                         ctx=context[0]).as_in_context(
                             mx.cpu()).tostype('default')
+                    else:
+                        subword_idx_to_vec = embedding.subword_embedding.embedding.weight.row_sparse_data(
+                            mx.nd.arange(len(subword_function),
+                                         ctx=context[0])).as_in_context(
+                                             mx.cpu()).tostype('default')
                     subword_embedding_norm = mx.nd.norm(
                         subword_idx_to_vec, axis=1)
                     num_zero_subword_vectors = mx.nd.sum(
@@ -735,11 +801,20 @@ def evaluate(args, embedding, vocab, global_step, eval_analogy=False):
         token_embedding[eval_tokens] = embedding[eval_tokens]
 
     # Compute set of vectors with zero word embedding
-    zero_word_vectors_words = [
-        vocab.idx_to_token[idx] for idx in np.where((
-            embedding.embedding.weight.data().norm(axis=1) < 1E-5
-        ).asnumpy())[0]
-    ]
+    if not args.distributed:
+        zero_word_vectors_words = sorted([
+            vocab.idx_to_token[idx] for idx in np.where((
+                embedding.embedding.weight.data().norm(axis=1) < 1E-5
+            ).asnumpy())[0]
+        ])
+    else:
+        ctx = embedding.embedding.weight.list_ctx()[0]
+        zero_word_vectors_words = sorted([
+            vocab.idx_to_token[idx]
+            for idx in np.where((embedding.embedding.weight.row_sparse_data(
+                mx.nd.arange(embedding.embedding.weight.shape[0],
+                             ctx=ctx)).norm(axis=1) < 1E-5).asnumpy())[0]
+        ])
 
     evaluation.evaluate_similarity(
         args, token_embedding, context[0], set(vocab.idx_to_token),
@@ -847,10 +922,10 @@ if __name__ == '__main__':
     # Check logdir
     if os.path.exists(args_.logdir) and \
        set(os.listdir(args_.logdir)) - set(("stderr.log", "stdout.log")):
-            newlogdir = tempfile.mkdtemp(dir=args_.logdir)
-            logging.warning(f'{args_.logdir} exists and contains '
-                            f'more than stderr/stdout.log. Using {newlogdir}')
-            args_.logdir = newlogdir
+        newlogdir = tempfile.mkdtemp(dir=args_.logdir)
+        logging.warning(f'{args_.logdir} exists and contains '
+                        f'more than stderr/stdout.log. Using {newlogdir}')
+        args_.logdir = newlogdir
 
     os.makedirs(args_.logdir, exist_ok=True)
 

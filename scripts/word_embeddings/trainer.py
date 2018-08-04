@@ -91,7 +91,7 @@ def add_parameters(parser):
                        'inverse subword vocabulary size.')
 
 
-def get_embedding_in_trainer(args, params, num_words):
+def get_embedding_in_optimizer(args, num_words):
     if 'proximal' in args.optimizer.lower():
         if not args.ngram_buckets and args.l2 != 0:
             warnings.warn('Enabling sparsity regularization {} '
@@ -124,10 +124,10 @@ def get_embedding_in_trainer(args, params, num_words):
     else:
         logging.error('Unsupported optimizer')
         sys.exit(1)
-    return gluon.Trainer(params, optimizer)
+    return optimizer
 
 
-def get_embedding_out_trainer(args, params):
+def get_embedding_out_optimizer(args):
     if  args.optimizer.lower() == 'proximaladagrad':
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.optimizer, learning_rate=args.lr,
@@ -149,18 +149,18 @@ def get_embedding_out_trainer(args, params):
     else:
         logging.error('Unsupported optimizer')
         sys.exit(1)
-    return gluon.Trainer(params, optimizer)
+    return optimizer
 
 
-def get_subword_trainer(args, params, num_subword_units):
+def get_subword_optimizer(args, num_subword_units):
     """Parase args depending on subwort network and return trainer."""
     if args.subword_network.lower() == 'fasttext':
-        return _get_sparse_subword_trainer(args, params, num_subword_units)
+        return _get_sparse_subword_optimizer(args, num_subword_units)
     else:
-        return _get_dense_subword_trainer(args, params)
+        return _get_dense_subword_optimizer(args)
 
 
-def _get_sparse_subword_trainer(args, params, num_subword_units):
+def _get_sparse_subword_optimizer(args, num_subword_units):
     if 'proximal' in args.subword_sparse_optimizer.lower():
         l2 = args.subword_sparse_l2 * 1 / num_subword_units
         logging.info('Setting l2 sparsity factor for subwords '
@@ -191,10 +191,10 @@ def _get_sparse_subword_trainer(args, params, num_subword_units):
     else:
         logging.error('Unsupported optimizer')
         sys.exit(1)
-    return gluon.Trainer(params, optimizer)
+    return optimizer
 
 
-def _get_dense_subword_trainer(args, params):
+def _get_dense_subword_optimizer(args, **kwargs):
     if args.subword_dense_optimizer.lower() == 'sgd':
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.subword_dense_optimizer, learning_rate=args.subword_dense_lr,
@@ -206,7 +206,7 @@ def _get_dense_subword_trainer(args, params):
     else:
         logging.error('Unsupported optimizer')
         sys.exit(1)
-    return gluon.Trainer(params, optimizer)
+    return optimizer
 
 
 def normalize_sparse_grads(args, embedding_block, unique_counts=None,
