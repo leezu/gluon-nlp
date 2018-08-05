@@ -162,7 +162,7 @@ def get_train_data(args):
     """Helper function to get training data."""
 
     def text8():
-        data = nlp.data.Text8(segment='train')[:1000]
+        data = nlp.data.Text8(segment='train')
         counter = nlp.data.count_tokens(itertools.chain.from_iterable(data))
         vocab = nlp.Vocab(counter, unknown_token=None, padding_token=None,
                           bos_token=None, eos_token=None, min_freq=5)
@@ -364,10 +364,11 @@ def train(args):
     params_emb_out = list(embedding_out.collect_params().values())
     optimizer_emb_in = trainer.get_embedding_in_optimizer(args, len(vocab))
     optimizer_emb_out = trainer.get_embedding_out_optimizer(args)
-    trainer_emb_in = mx.gluon.Trainer(params_emb_in, optimizer_emb_in,
-                                      kvstore=kvstore)
-    trainer_emb_out = mx.gluon.Trainer(params_emb_out, optimizer_emb_out,
-                                       kvstore=kvstore)
+    if 'dist' not in kvstore:
+        trainer_emb_in = mx.gluon.Trainer(params_emb_in, optimizer_emb_in,
+                                          kvstore=kvstore)
+        trainer_emb_out = mx.gluon.Trainer(params_emb_out, optimizer_emb_out,
+                                           kvstore=kvstore)
 
     if args.subword_network:
         if args.subword_network.lower() == 'fasttext':
@@ -384,8 +385,20 @@ def train(args):
             print('Unsupported subword network {args.subword_network}'.format(
                 args.subword_network))
 
-        trainer_subwords = mx.gluon.Trainer(
-            params_subwords, optimizer_subwords, kvstore=kvstore)
+        if 'dist' not in kvstore:
+            trainer_subwords = mx.gluon.Trainer(
+                params_subwords, optimizer_subwords, kvstore=kvstore)
+        else:
+            trainer_all = mx.gluon.Trainer(
+                params_emb_in + params_emb_out + params_subwords,
+                optimizer_emb_in, kvstore=kvstore)
+
+    elif 'dist' in kvstore:
+        # TODO
+        # Check which worker we are on; introduce barrier; push weights to server
+        trainer_all = mx.gluon.Trainer(params_emb_in + params_emb_out,
+                                       optimizer_subwords, kvstore=kvstore)
+
 
     if args.no_lazy_update:
         trainer_emb_in._optimizer.lazy_update = False
@@ -409,6 +422,13 @@ def train(args):
         masks = mx.nd.concat(word_context_mask, negatives_mask, dim=1)
         labels = mx.nd.concat(word_context_mask, mx.nd.zeros_like(negatives),
                               dim=1)
+
+        if args.distributed:
+            assert len(params_emb_in) == 1
+            assert len(params_emb_out) == 1
+            params_emb_in[0].row_sparse_data(centers.as_in_context(context[0]))
+            params_emb_out[0].row_sparse_data(word_context.as_in_context(context[0]))
+
         if args.subword_network.lower() not in ['fasttext', 'highwaycnn']:
             return (centers.as_in_context(context[0]),
                     context_negatives.as_in_context(context[0]),
@@ -426,7 +446,7 @@ def train(args):
             # No-op if parameter was updated during the last iteration.
             # Otherwise equivalent to the parameter being updated with a 0
             # gradient during the last iteration.
-            if ('proximal' in args.optimizer.lower()
+            if ('proximal' in args.optimizer.lower() and not args.distributed  # TODO workaroudn
                     and trainer_emb_in._optimizer.num_update > 0):
                 word_fake_grad = mx.nd.sparse.row_sparse_array(
                     (mx.nd.zeros((len(unique), args.emsize)), unique),
@@ -442,7 +462,7 @@ def train(args):
                     pass
                     # TODO Push empty grad to kvstore
                     # word_weight.row_sparse_data(mx.nd.array(unique, ctx=mx.gpu())).data
-            if ('proximal' in args.subword_sparse_optimizer.lower()
+            if ('proximal' in args.subword_sparse_optimizer.lower() and not args.distributed  # TODO workaroudn
                     and trainer_emb_in._optimizer.num_update > 0):
                 ngram_unique = np.unique(subwords)
                 subword_fake_grad = mx.nd.sparse.row_sparse_array(
@@ -460,12 +480,18 @@ def train(args):
                     pass
                     # TODO Push empty grad to kvstore
 
+            subwords = mx.nd.array(subwords, ctx=context[0])
+            subwords_mask = mx.nd.array(subwords_mask, ctx=context[0])
+
+            if args.distributed:
+                assert len(params_subwords) == 1
+                params_subwords[0].row_sparse_data(subwords)
+
             return (centers.as_in_context(context[0]),
                     context_negatives.as_in_context(context[0]),
                     masks.as_in_context(context[0]),
                     labels.as_in_context(context[0]),
-                    mx.nd.array(subwords, ctx=context[0]),
-                    mx.nd.array(subwords_mask, ctx=context[0]),
+                    subwords, subwords_mask,
                     inverse_unique_indices)
 
     def cbow_batch(data):
@@ -541,7 +567,7 @@ def train(args):
             stream=data, batch_size=args.batch_size * bucketing_split
             if args.ngram_buckets else args.batch_size,
             p_discard=idx_to_pdiscard, window_size=args.window)
-        batches = nlp.data.PrefetchingStream(batches, worker_type='process')
+        # batches = nlp.data.PrefetchingStream(batches, worker_type='process')
         if args.ngram_buckets and not args.no_bucketing:
             # For fastText training, create batches such that subwords used in
             # that batch are of similar length
@@ -658,21 +684,12 @@ def train(args):
                     if not args.no_lazy_update:
                         trainer_subwords._optimizer.lazy_update = True
             else:
-                assert trainer_emb_in._update_on_kvstore
-                assert trainer_emb_out._update_on_kvstore
-                assert trainer_subwords._update_on_kvstore
-                for param_idx, param in enumerate(params_emb_in):
+                assert trainer_all._update_on_kvstore
+                for param_idx, param in enumerate(
+                        params_emb_in + params_emb_out + params_subwords):
                     if param.grad_req != 'null':
-                        trainer_emb_in._kvstore.push(param_idx, param.list_grad(),
-                                                     priority=param_idx)
-                for param_idx, param in enumerate(params_emb_out):
-                    if param.grad_req != 'null':
-                        trainer_emb_out._kvstore.push(param_idx, param.list_grad(),
-                                                      priority=param_idx)
-                for param_idx, param in enumerate(params_subwords):
-                    if param.grad_req != 'null':
-                        trainer_subwords._kvstore.push(param_idx, param.list_grad(),
-                                                       priority=param_idx)
+                        trainer_all._kvstore.push(param_idx, param.list_grad(),
+                                                  priority=param_idx)
 
             # Logging
             log_wc += loss.shape[0]
