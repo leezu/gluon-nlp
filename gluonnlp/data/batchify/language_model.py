@@ -29,6 +29,7 @@ import numpy as np
 import mxnet as mx
 from mxnet.gluon.data import RandomSampler, SequentialSampler, SimpleDataset
 
+from ...base import numba_njit, numba_prange
 from ..utils import slice_sequence, _slice_pad_length
 from ..stream import DataStream
 
@@ -277,50 +278,77 @@ class _StreamBPTTBatchify(DataStream):
         self._padding_idx = vocab[vocab.padding_token]
 
     def __iter__(self):
-        def _init(data, target, value):
-            """Init the data and target with values."""
-            data[:] = value
-            target[:] = value
-
-        def _read(buffers, i, vocab, corpus):
-            """Read a sentence from the corpus into i-th buffer."""
-            if len(buffers[i]) <= 1:
-                buffers[i].extend(vocab[next(corpus)])
-
-        def _write(data, target, buffers, seq_len, i, length):
-            """Write a sentence from i-th buffer to data and target."""
-            num_tokens = len(buffers[i]) - 1
-            num_tokens = min(num_tokens, seq_len - length)
-            # fill in data and target
-            data[i, length:length+num_tokens] = buffers[i][:num_tokens]
-            target[i, length:length+num_tokens] = buffers[i][1:num_tokens+1]
-            # trim sentence in the buffer if too long. Used for the next batch
-            buffers[i] = buffers[i][num_tokens:]
-            return num_tokens
-
-        # stream states
-        buffers = [[] for _ in range(self._batch_size)]
+        buffers = [np.zeros(0, dtype=np.int_)] * self._batch_size
+        filled = np.zeros(self._batch_size, dtype=np.int_)
         has_next = True
         has_token_buffered = False
         data = np.empty([self._batch_size, self._seq_len], dtype=np.float32)
         target = np.empty([self._batch_size, self._seq_len], dtype=np.float32)
-        corpus = itertools.chain.from_iterable(
-            (corpus_dataset[idx] for idx in self._sampler(len(corpus_dataset)))
-            for corpus_dataset in self._corpus)
 
-        while has_next or has_token_buffered:
-            _init(data, target, self._padding_idx)
-            has_token_buffered = False
-            for i in range(self._batch_size):
-                length = 0
-                try:
-                    while length < self._seq_len:
-                        _read(buffers, i, self._vocab, corpus)
-                        num_tokens = _write(data, target, buffers, self._seq_len, i, length)
-                        if len(buffers[i]) > 0:
-                            has_token_buffered = True
-                        length += num_tokens
-                except StopIteration:
-                    has_next = False
-            if has_token_buffered or self._last_batch == 'keep':
+        for shard in self._corpus:
+            coded = [
+                np.array(self._vocab[shard[idx]], dtype=np.int_)
+                for idx in self._sampler(len(shard))
+            ]
+            for _ in _bptt_generator(coded, data, target, self._padding_idx,
+                                     buffers, filled):
                 yield mx.nd.array(data).T, mx.nd.array(target).T
+
+        if self._last_batch == 'keep' and np.max(filled) > 0:
+            # Last batch is neither empty nor full but should be kept
+            yield mx.nd.array(data).T, mx.nd.array(target).T
+
+
+@numba_njit
+def _bptt_generator(shard, data, target, pad_val, buffers, filled):
+    batch_size, seq_len = data.shape
+    shard_idx = 0
+
+    while shard_idx < len(shard):
+        _bptt_init(data, target, filled, pad_val)
+        has_token_buffered = False
+        for i in range(batch_size):
+            while filled[i] < seq_len:
+                if len(buffers[i]) <= 1 and  shard_idx == len(shard):
+                    # No more data to fill buffer[i] based on current shard
+                    # Need to call _bptt_generator with next shard
+                    return
+                shard_idx = _bptt_read(buffers, i, shard, shard_idx)
+                num_tokens = _bptt_write(data, target, buffers, seq_len, i, filled[i])
+                if len(buffers[i]) > 0:
+                    has_token_buffered = True
+                filled[i] += num_tokens
+        filled[:] = 0
+        yield
+
+@numba_njit
+def _bptt_init(data, target, filled, value):
+    """Init the data and target with values.
+
+    filled makes sure not to overwrite valid entries.
+
+    """
+    for i in numba_prange(data.shape[0]):
+        data[i, filled[i]:] = value
+        target[i, filled[i]:] = value
+
+@numba_njit
+def _bptt_read(buffers, i, shard, shard_idx):
+    """Read a sentence from the corpus into i-th buffer."""
+    if len(buffers[i]) <= 1:
+        buffers[i] = np.concatenate((buffers[i], shard[shard_idx]))
+        return shard_idx + 1
+    else:
+        return shard_idx
+
+@numba_njit
+def _bptt_write(data, target, buffers, seq_len, i, length):
+    """Write a sentence from i-th buffer to data and target."""
+    num_tokens = len(buffers[i]) - 1
+    num_tokens = min(num_tokens, seq_len - length)
+    # fill in data and target
+    data[i, length:length+num_tokens] = buffers[i][:num_tokens]
+    target[i, length:length+num_tokens] = buffers[i][1:num_tokens+1]
+    # trim sentence in the buffer if too long. Used for the next batch
+    buffers[i] = buffers[i][num_tokens:]
+    return num_tokens
