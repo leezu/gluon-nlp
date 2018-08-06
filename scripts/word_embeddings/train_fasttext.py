@@ -301,7 +301,7 @@ class SubwordLookup(object):
         return subwords_arr, mask
 
 
-def save(args, embedding, embedding_out, vocab):
+def save(args, embedding, embedding_out, vocab, epoch=None):
     """Save parameters to logdir.
 
     The parameters are first written to a temporary file and only if the saving
@@ -324,11 +324,19 @@ def save(args, embedding, embedding_out, vocab):
     ])
     with open(path, 'w') as f:
         f.write('\n'.join(zero_word_vectors_words))
-    os.replace(path, os.path.join(args.logdir, 'zero_word_vectors_words.txt'))
+    os.replace(
+        path,
+        os.path.join(
+            args.logdir, f'zero_word_vectors_words-{epoch}.txt'
+            if epoch is not None else 'zero_word_vectors_words.txt'))
 
     # write to temporary file; use os.replace
-    embedding.save_parameters(os.path.join(args.logdir, 'embedding.params'))
-    embedding_out.save_parameters(os.path.join(args.logdir, 'embedding_out.params'))
+    embedding.save_parameters(os.path.join(
+        args.logdir, f'embedding-{epoch}.params'
+        if epoch is not None else 'embedding.params'))
+    embedding_out.save_parameters(os.path.join(
+        args.logdir, f'embedding_out-{epoch}.params'
+        if epoch is not None else 'embedding_out.params'))
 
 
 ###############################################################################
@@ -742,6 +750,10 @@ def train(args):
                 with print_time('evaluate'):
                     evaluate(args, embedding, vocab, num_update)
 
+        # Save params
+        with print_time('save'):
+            save(args, embedding, embedding_out, vocab, epoch)
+
     # Save params
     with print_time('save'):
         save(args, embedding, embedding_out, vocab)
@@ -897,10 +909,10 @@ if __name__ == '__main__':
     # Check logdir
     if os.path.exists(args_.logdir) and \
        set(os.listdir(args_.logdir)) - set(("stderr.log", "stdout.log")):
-            newlogdir = tempfile.mkdtemp(dir=args_.logdir)
-            logging.warning(f'{args_.logdir} exists and contains '
-                            f'more than stderr/stdout.log. Using {newlogdir}')
-            args_.logdir = newlogdir
+        newlogdir = tempfile.mkdtemp(dir=args_.logdir)
+        logging.warning(f'{args_.logdir} exists and contains '
+                        f'more than stderr/stdout.log. Using {newlogdir}')
+        args_.logdir = newlogdir
 
     os.makedirs(args_.logdir, exist_ok=True)
 
