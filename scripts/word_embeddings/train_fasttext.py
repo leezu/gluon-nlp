@@ -135,6 +135,7 @@ def parse_args():
     group.add_argument('--seed', type=int, default=1, help='random seed')
     group.add_argument('--no-zero-init', action='store_true')
     group.add_argument('--no-bucketing', action='store_true')
+    group.add_argument('--kvstore-pull-interval', type=int, default=500)
 
     # Logging
     group = parser.add_argument_group('Logging arguments')
@@ -328,9 +329,10 @@ def save(args, embedding, embedding_out, vocab, epoch=None):
     os.replace(path, os.path.join(args.logdir, 'vocab.json'))
 
     # save list of words with zero word vectors
+    context = get_context(args)
     zero_word_vectors_words = sorted([
         vocab.idx_to_token[idx] for idx in np.where((
-            embedding.embedding.weight.data().norm(axis=1) < 1E-5
+            embedding.embedding.weight.data(context[0]).norm(axis=1) < 1E-5
         ).asnumpy())[0]
     ])
     with open(path, 'w') as f:
@@ -401,21 +403,46 @@ def train(args):
         embedding.hybridize(static_alloc=not args.no_static_alloc)
         embedding_out.hybridize(static_alloc=not args.no_static_alloc)
 
-    trainer_emb_in = trainer.get_embedding_in_trainer(
-        args, embedding.embedding.collect_params(), len(vocab))
-    trainer_emb_out = trainer.get_embedding_out_trainer(
-        args, embedding_out.collect_params())
+    params_emb_in = list(embedding.embedding.collect_params().values())
+    params_emb_out = list(embedding_out.collect_params().values())
+    optimizer_emb_in = trainer.get_embedding_in_optimizer(args, len(vocab))
+    optimizer_emb_out = trainer.get_embedding_out_optimizer(args)
+    trainer_emb_in = mx.gluon.Trainer(params_emb_in, optimizer_emb_in,
+                                          kvstore=None)
+    trainer_emb_out = mx.gluon.Trainer(params_emb_out, optimizer_emb_out,
+                                           kvstore=None)
+    if len(context) > 1:
+        kvstore_emb_in = mx.kvstore.create('device')
+        kvstore_emb_in.set_optimizer(optimizer_emb_in)
+        for param_idx, param in enumerate(params_emb_in):
+            kvstore_emb_in.init(param_idx, param.data(context[0]))
+        kvstore_emb_out = mx.kvstore.create('device')
+        kvstore_emb_out.set_optimizer(optimizer_emb_out)
+        for param_idx, param in enumerate(params_emb_out):
+            kvstore_emb_out.init(param_idx, param.data(context[0]))
 
-    if args.subword_network.lower() == 'fasttext':
-        trainer_subwords = trainer.get_subword_trainer(
-            args, embedding.subword_embedding.collect_params(),
-            len(subword_function))
-    elif args.subword_network.lower() == 'highwaycnn':
-        trainer_subwords = trainer.get_subword_trainer(
-            args,
-            list(embedding.cnn.collect_params().values()) +
-            list(embedding.character_embedding.collect_params().values()),
-            len(subword_function))
+    if args.subword_network:
+        if args.subword_network.lower() == 'fasttext':
+            optimizer_subwords = trainer.get_subword_optimizer(
+                args, len(subword_function))
+            params_subwords = list(
+                embedding.subword_embedding.collect_params().values())
+        elif args.subword_network.lower() == 'highwaycnn':
+            optimizer_subwords = trainer.get_subword_optimizer(
+                args, len(subword_function))
+            params_subwords = list(embedding.cnn.collect_params().values()) + \
+                list(embedding.character_embedding.collect_params().values())
+        else:
+            print('Unsupported subword network {args.subword_network}'.format(
+                args.subword_network))
+
+        trainer_subwords = mx.gluon.Trainer(
+            params_subwords, optimizer_subwords, kvstore=None)
+        if len(context) > 1:
+            kvstore_subwords = mx.kvstore.create('device')
+            kvstore_subwords.set_optimizer(optimizer_subwords)
+            for param_idx, param in enumerate(params_subwords):
+                kvstore_subwords.init(param_idx, param.data(context[0]))
 
     if args.no_lazy_update:
         trainer_emb_in._optimizer.lazy_update = False
@@ -427,7 +454,7 @@ def train(args):
         if hasattr(embedding, 'subwordminlength'):
             minlength = embedding.subwordminlength
 
-    def skipgram_batch(data):
+    def skipgram_batch(data, ctx):
         """Create a batch for Skipgram training objective."""
         centers, word_context, word_context_mask = data
         assert len(centers.shape) == 2
@@ -439,15 +466,15 @@ def train(args):
         labels = mx.nd.concat(word_context_mask, mx.nd.zeros_like(negatives),
                               dim=1)
         if args.subword_network.lower() not in ['fasttext', 'highwaycnn']:
-            return (centers.as_in_context(context[0]),
-                    context_negatives.as_in_context(context[0]),
-                    masks.as_in_context(context[0]),
-                    labels.as_in_context(context[0]))
+            return (centers.as_in_context(ctx),
+                    context_negatives.as_in_context(ctx),
+                    masks.as_in_context(ctx),
+                    labels.as_in_context(ctx))
         else:
             unique, inverse_unique_indices = np.unique(centers.asnumpy(),
                                                        return_inverse=True)
             inverse_unique_indices = mx.nd.array(inverse_unique_indices,
-                                                 ctx=context[0])
+                                                 ctx=ctx)
             subwords, subwords_mask = subword_lookup.get(
                 unique.astype(int), minlength)
 
@@ -463,7 +490,7 @@ def train(args):
                     shape=embedding.embedding.weight.shape)
                 word_weight = embedding.embedding.weight
                 word_weight.grad()[:] = word_fake_grad
-                word_weight.data()._fresh_grad = True
+                word_weight.data(ctx)._fresh_grad = True
                 trainer_emb_in._optimizer._index_update_count[0] -= 1
                 trainer_emb_in._optimizer.num_update -= 1
                 trainer_emb_in.step(batch_size=1)
@@ -477,20 +504,20 @@ def train(args):
                     shape=embedding.subword_embedding.embedding.weight.shape)
                 subword_weight = embedding.subword_embedding.embedding.weight
                 subword_weight.grad()[:] = subword_fake_grad
-                subword_weight.data()._fresh_grad = True
+                subword_weight.data(ctx)._fresh_grad = True
                 trainer_subwords._optimizer._index_update_count[0] -= 1
                 trainer_subwords._optimizer.num_update -= 1
                 trainer_subwords.step(batch_size=1)
 
-            return (centers.as_in_context(context[0]),
-                    context_negatives.as_in_context(context[0]),
-                    masks.as_in_context(context[0]),
-                    labels.as_in_context(context[0]),
-                    mx.nd.array(subwords, ctx=context[0]),
-                    mx.nd.array(subwords_mask, ctx=context[0]),
+            return (centers.as_in_context(ctx),
+                    context_negatives.as_in_context(ctx),
+                    masks.as_in_context(ctx),
+                    labels.as_in_context(ctx),
+                    mx.nd.array(subwords, ctx=ctx),
+                    mx.nd.array(subwords_mask, ctx=ctx),
                     inverse_unique_indices)
 
-    def cbow_batch(data):
+    def cbow_batch(data, ctx):
         """Create a batch for CBOW training objective."""
         centers, word_context, word_context_mask = data
         assert len(centers.shape) == 2
@@ -503,25 +530,25 @@ def train(args):
         labels = mx.nd.concat(
             mx.nd.ones_like(centers), mx.nd.zeros_like(negatives), dim=1)
         if args.subword_network.lower() not in ['fasttext', 'highwaycnn']:
-            return (word_context.as_in_context(context[0]),
-                    word_context_mask.as_in_context(context[0]),
-                    center_negatives.as_in_context(context[0]),
-                    center_negatives_mask.as_in_context(context[0]),
-                    labels.as_in_context(context[0]))
+            return (word_context.as_in_context(ctx),
+                    word_context_mask.as_in_context(ctx),
+                    center_negatives.as_in_context(ctx),
+                    center_negatives_mask.as_in_context(ctx),
+                    labels.as_in_context(ctx))
         else:
             unique, inverse_unique_indices = np.unique(word_context.asnumpy(),
                                                        return_inverse=True)
             inverse_unique_indices = mx.nd.array(inverse_unique_indices,
-                                                 ctx=context[0])
+                                                 ctx=ctx)
             subwords, subwords_mask = subword_lookup.get(
                 unique.astype(int), minlength)
-            return (word_context.as_in_context(context[0]),
-                    word_context_mask.as_in_context(context[0]),
-                    center_negatives.as_in_context(context[0]),
-                    center_negatives_mask.as_in_context(context[0]),
-                    labels.as_in_context(context[0]),
-                    mx.nd.array(subwords, ctx=context[0]),
-                    mx.nd.array(subwords_mask, ctx=context[0]),
+            return (word_context.as_in_context(ctx),
+                    word_context_mask.as_in_context(ctx),
+                    center_negatives.as_in_context(ctx),
+                    center_negatives_mask.as_in_context(ctx),
+                    labels.as_in_context(ctx),
+                    mx.nd.array(subwords, ctx=ctx),
+                    mx.nd.array(subwords_mask, ctx=ctx),
                     inverse_unique_indices)
 
     # Helpers for bucketing
@@ -579,6 +606,7 @@ def train(args):
                                       bucketing_batchify_fn)
 
         for i, batch in enumerate(batches):
+            ctx = context[i % len(context)]
             progress = (epoch * num_tokens + i * args.batch_size) / \
                 (args.epochs * num_tokens)
 
@@ -589,7 +617,7 @@ def train(args):
                 if args.ngram_buckets:
                     (center, context_negatives, mask, label, subwords,
                      subwords_mask,
-                     inverse_unique_indices) = skipgram_batch(batch)
+                     inverse_unique_indices) = skipgram_batch(batch, ctx)
                     with mx.autograd.record():
                         emb_in = embedding(center, subwords,
                                            subwordsmask=subwords_mask,
@@ -601,7 +629,7 @@ def train(args):
                                 mask.shape[1] / mask.sum(axis=1))
                 else:
                     (center, context_negatives, mask,
-                     label) = skipgram_batch(batch)
+                     label) = skipgram_batch(batch, ctx)
                     with mx.autograd.record():
                         emb_in = embedding(center)
                         emb_out = embedding_out(context_negatives, mask)
@@ -612,7 +640,7 @@ def train(args):
                 if args.ngram_buckets:
                     (word_context, word_context_mask, center_negatives,
                      center_negatives_mask, label, subwords, subwords_mask,
-                     inverse_unique_indices) = cbow_batch(batch)
+                     inverse_unique_indices) = cbow_batch(batch, ctx)
                     with mx.autograd.record():
                         emb_in = embedding(word_context, subwords,
                                            wordsmask=word_context_mask,
@@ -629,7 +657,7 @@ def train(args):
                                 center_negatives_mask.sum(axis=1))
                 else:
                     (word_context, word_context_mask, center_negatives,
-                     center_negatives_mask, label) = cbow_batch(batch)
+                     center_negatives_mask, label) = cbow_batch(batch, ctx)
                     with mx.autograd.record():
                         emb_in = embedding(word_context,
                                            wordsmask=word_context_mask)
@@ -680,23 +708,42 @@ def train(args):
                     trainer_emb_in._optimizer.lazy_update = False
                     if args.subword_network.lower() == 'fasttext':
                         trainer_subwords._optimizer.lazy_update = False
-            trainer_emb_in.step(batch_size=1)
-            trainer_emb_out.step(batch_size=1)
-            if not args.no_lazy_update:
-                trainer_emb_in._optimizer.lazy_update = True
-            if args.subword_network.lower() in ['fasttext', 'highwaycnn']:
-                trainer_subwords.step(batch_size=1)
+            if len(context) == 1 or (i + 1) % len(context) == 0:
+                trainer_emb_in.step(batch_size=1)
+                trainer_emb_out.step(batch_size=1)
                 if not args.no_lazy_update:
-                    trainer_subwords._optimizer.lazy_update = True
+                    trainer_emb_in._optimizer.lazy_update = True
+                if args.subword_network.lower() in ['fasttext', 'highwaycnn']:
+                    trainer_subwords.step(batch_size=1)
+                    if not args.no_lazy_update:
+                        trainer_subwords._optimizer.lazy_update = True
+
+                # Push/pull kvstore
+                if len(context) > 1:
+                    for param_idx, param in enumerate(params_emb_in):
+                        kvstore_emb_in.push(param_idx, param.grad(ctx))
+                        if (i + 1) % args.kvstore_pull_interval == 0:
+                            kvstore_emb_in.pull(param_idx, param.list_data())
+                    for param_idx, param in enumerate(params_emb_out):
+                        kvstore_emb_out.push(param_idx, param.grad(ctx))
+                        if (i + 1) % args.kvstore_pull_interval == 0:
+                            kvstore_emb_out.pull(param_idx, param.list_data())
+                    if args.subword_network.lower():
+                        for param_idx, param in enumerate(params_subwords):
+                            kvstore_subwords.push(param_idx, param.list_grad())
+                            if ((i + 1) / len(context)) % args.kvstore_pull_interval == 0:
+                                kvstore_subwords.pull(param_idx, param.list_data())
+
+
 
             # Logging
             log_wc += loss.shape[0]
-            log_avg_loss += loss.mean()
+            log_avg_loss += loss.mean().as_in_context(context[0])
             if (i + 1) % args.log_interval == 0:
                 # Forces waiting for computation by computing loss value
                 log_avg_loss = log_avg_loss.asscalar() / args.log_interval
                 wps = log_wc / (time.time() - log_start_time)
-                vector_norm = embedding.embedding.weight.data().norm(axis=1)
+                vector_norm = embedding.embedding.weight.data(context[0]).norm(axis=1)
                 # Due to subsampling, the overall number of batches is an upper bound
                 logging.info(
                     '[Epoch {} Batch {}/{}] loss={:.4f}, '
@@ -808,9 +855,10 @@ def evaluate(args, embedding, vocab, global_step, eval_analogy=False):
         token_embedding[eval_tokens] = embedding[eval_tokens]
 
     # Compute set of vectors with zero word embedding
+    context = get_context(args)
     zero_word_vectors_words = [
         vocab.idx_to_token[idx] for idx in np.where((
-            embedding.embedding.weight.data().norm(axis=1) < 1E-5
+            embedding.embedding.weight.data(mx.cpu()).norm(axis=1) < 1E-5
         ).asnumpy())[0]
     ]
 
