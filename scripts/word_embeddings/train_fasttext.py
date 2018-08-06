@@ -103,6 +103,8 @@ def parse_args():
     group.add_argument(
         '--eval-only', type=str, help='Only evaluate the model '
         'stored at `--eval-only path`')
+    group.add_argument(
+        '--alternative-subsampling', action='store_true')
 
     # Model
     group = parser.add_argument_group('Model arguments')
@@ -211,10 +213,18 @@ def get_train_data(args):
         weights=mx.nd.array(idx_to_counts)**0.75)
 
     sum_counts = float(sum(idx_to_counts))
-    idx_to_pdiscard = [
-        1 - math.sqrt(args.frequent_token_subsampling / (count / sum_counts))
-        for count in idx_to_counts
-    ]
+    if not args.alternative_subsampling:
+        idx_to_pdiscard = [
+            1 - math.sqrt(args.frequent_token_subsampling / (count / sum_counts))
+            for count in idx_to_counts
+        ]
+    else:
+        idx_to_pdiscard = [
+            1 - math.sqrt(
+                args.frequent_token_subsampling / (count / sum_counts)) -
+            (args.frequent_token_subsampling / (count / sum_counts))
+            for count in idx_to_counts
+        ]
 
     def subsample(shard):
         return [[
