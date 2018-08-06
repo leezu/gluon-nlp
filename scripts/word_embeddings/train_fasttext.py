@@ -454,8 +454,9 @@ def train(args):
             # No-op if parameter was updated during the last iteration.
             # Otherwise equivalent to the parameter being updated with a 0
             # gradient during the last iteration.
-            if ('proximal' in args.optimizer.lower()
-                    and trainer_emb_in._optimizer.num_update > 0):
+            if 'proximal' in args.optimizer.lower() \
+               and trainer_emb_in._optimizer.num_update > 0 \
+               and args.l2 > 0:
                 word_fake_grad = mx.nd.sparse.row_sparse_array(
                     (mx.nd.zeros((len(unique), args.emsize)), unique),
                     shape=embedding.embedding.weight.shape)
@@ -465,8 +466,9 @@ def train(args):
                 trainer_emb_in._optimizer._index_update_count[0] -= 1
                 trainer_emb_in._optimizer.num_update -= 1
                 trainer_emb_in.step(batch_size=1)
-            if ('proximal' in args.subword_sparse_optimizer.lower()
-                    and trainer_emb_in._optimizer.num_update > 0):
+            if 'proximal' in args.subword_sparse_optimizer.lower() \
+                    and trainer_emb_in._optimizer.num_update > 0 \
+                    and args.subword_sparse_l2 > 0:
                 ngram_unique = np.unique(subwords)
                 subword_fake_grad = mx.nd.sparse.row_sparse_array(
                     (mx.nd.zeros(
