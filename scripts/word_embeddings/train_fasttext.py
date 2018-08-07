@@ -692,8 +692,6 @@ def train(args):
             log_wc += loss.shape[0]
             log_avg_loss += loss.mean()
             if (i + 1) % args.log_interval == 0:
-                gc.collect()  # Release CPU memory
-
                 # Forces waiting for computation by computing loss value
                 log_avg_loss = log_avg_loss.asscalar() / args.log_interval
                 wps = log_wc / (time.time() - log_start_time)
@@ -727,11 +725,8 @@ def train(args):
                 )
 
                 if args.subword_network.lower() == 'fasttext':
-                    subword_idx_to_vec = embedding.subword_embedding.embedding.weight.data(
-                        ctx=context[0]).as_in_context(
-                            mx.cpu()).tostype('default')
-                    subword_embedding_norm = mx.nd.norm(
-                        subword_idx_to_vec, axis=1)
+                    subword_embedding_norm = embedding.subword_embedding.embedding.weight.data(
+                        ctx=context[0]).norm(axis=1)
                     num_zero_subword_vectors = mx.nd.sum(
                         subword_embedding_norm < 1E-5).asscalar()
                     assert len(subword_function) == \
