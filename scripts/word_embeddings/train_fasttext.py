@@ -522,9 +522,9 @@ def train(args):
                 trainer_subwords.set_learning_rate(
                     max(0.0001, args.lr_subwords * (1 - progress)))
 
-            trainer.step(batch_size=1)
+            trainer.step(batch_size=loss.shape[0])
             if args.ngram_buckets:
-                trainer_subwords.step(batch_size=1)
+                trainer_subwords.step(batch_size=loss.shape[0])
 
             # Logging
             log_wc += loss.shape[0]
