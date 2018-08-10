@@ -679,12 +679,12 @@ def train(args):
                     trainer_emb_in._optimizer.lazy_update = False
                     if args.subword_network.lower() == 'fasttext':
                         trainer_subwords._optimizer.lazy_update = False
-            trainer_emb_in.step(batch_size=1)
-            trainer_emb_out.step(batch_size=1)
+            trainer_emb_in.step(batch_size=loss.shape[0])
+            trainer_emb_out.step(batch_size=loss.shape[0])
             if not args.no_lazy_update:
                 trainer_emb_in._optimizer.lazy_update = True
             if args.subword_network.lower() in ['fasttext', 'highwaycnn']:
-                trainer_subwords.step(batch_size=1)
+                trainer_subwords.step(batch_size=loss.shape[0])
                 if not args.no_lazy_update:
                     trainer_subwords._optimizer.lazy_update = True
 

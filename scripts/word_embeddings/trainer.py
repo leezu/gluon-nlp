@@ -112,7 +112,7 @@ def get_embedding_in_trainer(args, params, num_words):
                           **kwargs)
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.optimizer, **kwargs)
-    elif args.optimizer.lower() in ['sgd', 'adam', 'adagrad']:
+    elif args.optimizer.lower() in ['sgd', 'adam', 'adagrad', 'ftml']:
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.optimizer, learning_rate=args.lr)
     elif args.optimizer.lower() == 'rmsprop':
@@ -137,7 +137,7 @@ def get_embedding_out_trainer(args, params):
             decay_states=args.adagrad_decay_states,
             decay_factor=args.adagrad_decay_factor,
             lazy_decay=args.adagrad_lazy_decay)
-    elif args.optimizer.lower() in ['sgd', 'adam', 'adagrad']:
+    elif args.optimizer.lower() in ['sgd', 'adam', 'adagrad', 'ftml']:
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.optimizer, learning_rate=args.lr)
     elif args.optimizer.lower() == 'rmsprop':
@@ -178,7 +178,7 @@ def _get_sparse_subword_trainer(args, params, num_subword_units):
                           decay_factor=args.adagrad_decay_factor, **kwargs)
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.subword_sparse_optimizer, **kwargs)
-    elif args.subword_sparse_optimizer.lower() in ['sgd', 'adagrad', 'adam']:
+    elif args.subword_sparse_optimizer.lower() in ['sgd', 'adagrad', 'adam', 'ftml']:
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.subword_sparse_optimizer,
             learning_rate=args.subword_sparse_lr)
@@ -199,7 +199,7 @@ def _get_dense_subword_trainer(args, params):
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.subword_dense_optimizer, learning_rate=args.subword_dense_lr,
             wd=args.subword_dense_wd, momentum=args.subword_dense_momentum)
-    elif args.subword_dense_optimizer.lower() in ['adam', 'adagrad']:
+    elif args.subword_dense_optimizer.lower() in ['adam', 'adagrad', 'ftml']:
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.subword_dense_optimizer, learning_rate=args.subword_dense_lr,
             wd=args.subword_dense_wd)
