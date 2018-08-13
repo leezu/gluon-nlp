@@ -45,6 +45,7 @@ def add_parameters(parser):
 
     group = parser.add_argument_group('Word level optimization arguments')
     group.add_argument('--optimizer', type=str, default='adagrad')
+    group.add_argument('--optimizer-eps', type=float)
     group.add_argument('--adagrad-groupwise-lr', action='store_true')
     group.add_argument('--adagrad-decay-states', action='store_true')
     group.add_argument('--adagrad-lazy-decay', action='store_true')
@@ -81,6 +82,7 @@ def add_parameters(parser):
     group.add_argument('--subword-sparse-optimizer', type=str,
                        default='adagrad',
                        help='Optimizer used to train subword network.')
+    group.add_argument('--subword-sparse-optimizer-eps', type=float)
     group.add_argument('--subword-sparse-lr', type=float, default=0.1,
                        help='Learning rate for subword embedding network.')
     group.add_argument('--subword-sparse-lr-schedule', type=str,
@@ -113,8 +115,12 @@ def get_embedding_in_trainer(args, params, num_words):
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.optimizer, **kwargs)
     elif args.optimizer.lower() in ['sgd', 'adam', 'adagrad', 'ftml']:
-        optimizer = mx.optimizer.Optimizer.create_optimizer(
-            args.optimizer, learning_rate=args.lr)
+        if args.optimizer_eps:
+            optimizer = mx.optimizer.Optimizer.create_optimizer(
+                args.optimizer, learning_rate=args.lr, eps=args.optimizer_eps)
+        else:
+            optimizer = mx.optimizer.Optimizer.create_optimizer(
+                args.optimizer, learning_rate=args.lr)
     elif args.optimizer.lower() == 'rmsprop':
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.optimizer, learning_rate=args.lr, gamma1=args.adagrad_decay_factor)
@@ -138,8 +144,12 @@ def get_embedding_out_trainer(args, params):
             decay_factor=args.adagrad_decay_factor,
             lazy_decay=args.adagrad_lazy_decay)
     elif args.optimizer.lower() in ['sgd', 'adam', 'adagrad', 'ftml']:
-        optimizer = mx.optimizer.Optimizer.create_optimizer(
-            args.optimizer, learning_rate=args.lr)
+        if args.optimizer_eps:
+            optimizer = mx.optimizer.Optimizer.create_optimizer(
+                args.optimizer, learning_rate=args.lr, eps=args.optimizer_eps)
+        else:
+            optimizer = mx.optimizer.Optimizer.create_optimizer(
+                args.optimizer, learning_rate=args.lr)
     elif args.optimizer.lower() == 'rmsprop':
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.optimizer, learning_rate=args.lr,
@@ -179,9 +189,12 @@ def _get_sparse_subword_trainer(args, params, num_subword_units):
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.subword_sparse_optimizer, **kwargs)
     elif args.subword_sparse_optimizer.lower() in ['sgd', 'adagrad', 'adam', 'ftml']:
-        optimizer = mx.optimizer.Optimizer.create_optimizer(
-            args.subword_sparse_optimizer,
-            learning_rate=args.subword_sparse_lr)
+        if args.optimizer_eps:
+            optimizer = mx.optimizer.Optimizer.create_optimizer(
+                args.optimizer, learning_rate=args.subword_sparse_lr, eps=args.optimizer_eps)
+        else:
+            optimizer = mx.optimizer.Optimizer.create_optimizer(
+                args.optimizer, learning_rate=args.subword_sparse_lr)
     elif args.optimizer.lower() == 'adadelta':
         optimizer = mx.optimizer.Optimizer.create_optimizer(
             args.optimizer)
