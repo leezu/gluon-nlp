@@ -164,6 +164,8 @@ class StreamBPTTBatchify(object):
 
     For example, the following 4 sequences::
 
+    TODO(leezu) update doc
+
         a b c d <eos>
         e f g h i j <eos>
         k l m n <eos>
@@ -275,6 +277,9 @@ class _StreamBPTTBatchify(DataStream):
         self._sampler = sampler
         self._last_batch = last_batch
         self._padding_idx = vocab[vocab.padding_token]
+        self._eos_idx = vocab[vocab.eos_token] \
+            if vocab.eos_token is not None else None
+        # TODO leezu: above only if bos=None is used
 
     def __iter__(self):
         def _init(data, target, value):
@@ -299,7 +304,8 @@ class _StreamBPTTBatchify(DataStream):
             return num_tokens
 
         # stream states
-        buffers = [[] for _ in range(self._batch_size)]
+        buffers = [[self._eos_idx] if self._eos_idx is not None else []
+                   for _ in range(self._batch_size)]
         has_next = True
         has_token_buffered = False
         data = np.empty([self._batch_size, self._seq_len], dtype=np.float32)
