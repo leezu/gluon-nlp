@@ -103,6 +103,7 @@ def parse_args():
     group.add_argument(
         '--eval-only', type=str, help='Only evaluate the model '
         'stored at `--eval-only path`')
+    group.add_argument('--eval-max-vocab-size', type=int)
     group.add_argument(
         '--alternative-subsampling', action='store_true')
 
@@ -780,7 +781,10 @@ def evaluate(args, embedding, vocab, global_step, eval_analogy=False):
 
         eval_tokens_set = evaluation.get_tokens_in_evaluation_datasets(args)
         if not args.no_eval_analogy:
-            eval_tokens_set.update(vocab.idx_to_token)
+            if not args.eval_max_vocab_size:
+                eval_tokens_set.update(vocab.idx_to_token)
+            else:
+                eval_tokens_set.update(vocab.idx_to_token[:args.eval_max_vocab_size])
 
         if args.subword_network.lower() not in ['fasttext', 'highwaycnn']:
             # Word2Vec does not support computing vectors for OOV words
@@ -810,14 +814,18 @@ def evaluate(args, embedding, vocab, global_step, eval_analogy=False):
         ).asnumpy())[0]
     ]
 
+    known_tokens = vocab.idx_to_token
+    if args.eval_max_vocab_size:
+        known_tokens = known_tokens[:args.eval_max_vocab_size]
+    known_tokens = set(known_tokens)
     evaluation.evaluate_similarity(
-        args, token_embedding, context[0], set(vocab.idx_to_token),
+        args, token_embedding, context[0], known_tokens,
         zero_word_vectors_set=zero_word_vectors_words, logfile=os.path.join(
             args.logdir, 'similarity.tsv'), global_step=global_step)
     if eval_analogy:
         assert not args.no_eval_analogy
         evaluation.evaluate_analogy(
-            args, token_embedding, context[0], set(vocab.idx_to_token),
+            args, token_embedding, context[0], known_tokens,
             zero_word_vectors_set=zero_word_vectors_words,
             logfile=os.path.join(args.logdir, 'analogy.tsv'))
 
