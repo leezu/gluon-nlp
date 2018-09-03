@@ -50,7 +50,7 @@ def add_parameters(parser):
     group.add_argument('--adagrad-decay-states', action='store_true')
     group.add_argument('--adagrad-lazy-decay', action='store_true')
     group.add_argument('--adagrad-decay-factor', type=float, default=0.9)
-    group.add_argument('--lr', type=float, default=0.1,
+    group.add_argument('--lr', type=float, default=0.3,
                        help='Learning rate for embeddings matrix.')
     group.add_argument('--lr-schedule', type=str, default='linear',
                        help='Learning rate schedule.')
@@ -83,7 +83,7 @@ def add_parameters(parser):
                        default='adagrad',
                        help='Optimizer used to train subword network.')
     group.add_argument('--subword-sparse-optimizer-eps', type=float)
-    group.add_argument('--subword-sparse-lr', type=float, default=0.1,
+    group.add_argument('--subword-sparse-lr', type=float, default=0.3,
                        help='Learning rate for subword embedding network.')
     group.add_argument('--subword-sparse-lr-schedule', type=str,
                        default='linear', help='Learning rate schedule.')
