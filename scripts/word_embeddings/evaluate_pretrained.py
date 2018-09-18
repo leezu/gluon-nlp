@@ -143,10 +143,7 @@ def load_embedding_from_path(args):
 
         if args.analogy_datasets:
             # Pre-compute all words in vocabulary in case of analogy evaluation
-            idx_to_token = [
-                model.token_to_idx[idx]
-                for idx in range(len(model.token_to_idx))
-            ]
+            idx_to_token = sorted(model.token_to_idx, key=model.token_to_idx.get)
             if args.max_vocab_size:
                 idx_to_token = idx_to_token[:args.max_vocab_size]
         else:
@@ -215,7 +212,8 @@ if __name__ == '__main__':
             if t in token_embedding_.unknown_lookup
         ]]
 
-        if len(token_embedding_.idx_to_token) > args_.max_vocab_size:
+        if (args_.max_vocab_size
+                and len(token_embedding_.idx_to_token) > args_.max_vocab_size):
             logging.warning('Computing embeddings for OOV words that occur '
                             'in the evaluation dataset lead to having '
                             'more words than --max-vocab-size. '
