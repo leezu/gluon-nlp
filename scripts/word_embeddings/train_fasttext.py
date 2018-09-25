@@ -135,7 +135,6 @@ def parse_args():
     group.add_argument('--seed', type=int, default=1, help='random seed')
     group.add_argument('--no-zero-init', action='store_true')
     group.add_argument('--no-bucketing', action='store_true')
-    group.add_argument('--kvstore-pull-interval', type=int, default=500)
 
     # Logging
     group = parser.add_argument_group('Logging arguments')
@@ -408,18 +407,9 @@ def train(args):
     optimizer_emb_in = trainer.get_embedding_in_optimizer(args, len(vocab))
     optimizer_emb_out = trainer.get_embedding_out_optimizer(args)
     trainer_emb_in = mx.gluon.Trainer(params_emb_in, optimizer_emb_in,
-                                          kvstore=None)
+                                      kvstore=None)
     trainer_emb_out = mx.gluon.Trainer(params_emb_out, optimizer_emb_out,
-                                           kvstore=None)
-    if len(context) > 1:
-        kvstore_emb_in = mx.kvstore.create('device')
-        kvstore_emb_in.set_optimizer(optimizer_emb_in)
-        for param_idx, param in enumerate(params_emb_in):
-            kvstore_emb_in.init(param_idx, param.data(context[0]))
-        kvstore_emb_out = mx.kvstore.create('device')
-        kvstore_emb_out.set_optimizer(optimizer_emb_out)
-        for param_idx, param in enumerate(params_emb_out):
-            kvstore_emb_out.init(param_idx, param.data(context[0]))
+                                       kvstore=None)
 
     if args.subword_network:
         if args.subword_network.lower() == 'fasttext':
@@ -438,11 +428,6 @@ def train(args):
 
         trainer_subwords = mx.gluon.Trainer(
             params_subwords, optimizer_subwords, kvstore=None)
-        if len(context) > 1:
-            kvstore_subwords = mx.kvstore.create('device')
-            kvstore_subwords.set_optimizer(optimizer_subwords)
-            for param_idx, param in enumerate(params_subwords):
-                kvstore_subwords.init(param_idx, param.data(context[0]))
 
     if args.no_lazy_update:
         trainer_emb_in._optimizer.lazy_update = False
@@ -487,27 +472,35 @@ def train(args):
                and args.l2 > 0:
                 word_fake_grad = mx.nd.sparse.row_sparse_array(
                     (mx.nd.zeros((len(unique), args.emsize)), unique),
-                    shape=embedding.embedding.weight.shape)
-                word_weight = embedding.embedding.weight
-                word_weight.grad()[:] = word_fake_grad
-                word_weight.data(ctx)._fresh_grad = True
+                    shape=embedding.embedding.weight.shape,
+                    ctx=ctx)
+                # trainer_emb_in._optimizer is shared among all updaters
+                # trainer_emb_in._updaters[ctx_idx]
                 trainer_emb_in._optimizer._index_update_count[0] -= 1
                 trainer_emb_in._optimizer.num_update -= 1
-                trainer_emb_in.step(batch_size=1)
+                ctx_idx = trainer_emb_in._contexts.index(ctx)
+                upd = trainer_emb_in._updaters[ctx_idx]
+                assert len(trainer_emb_in._params) == 1
+                for i, param in enumerate(trainer_emb_in._params):
+                    arr = param.list_data()[ctx_idx]
+                    upd(i, word_fake_grad, arr)
             if 'proximal' in args.subword_sparse_optimizer.lower() \
                     and trainer_emb_in._optimizer.num_update > 0 \
                     and args.subword_sparse_l2 > 0:
                 ngram_unique = np.unique(subwords)
                 subword_fake_grad = mx.nd.sparse.row_sparse_array(
-                    (mx.nd.zeros(
-                        (len(ngram_unique), args.emsize)), ngram_unique),
-                    shape=embedding.subword_embedding.embedding.weight.shape)
-                subword_weight = embedding.subword_embedding.embedding.weight
-                subword_weight.grad()[:] = subword_fake_grad
-                subword_weight.data(ctx)._fresh_grad = True
+                    (mx.nd.zeros((len(ngram_unique), args.emsize)),
+                     ngram_unique),
+                    shape=embedding.subword_embedding.embedding.weight.shape,
+                    ctx=ctx)
                 trainer_subwords._optimizer._index_update_count[0] -= 1
                 trainer_subwords._optimizer.num_update -= 1
-                trainer_subwords.step(batch_size=1)
+                ctx_idx = trainer_subwords._contexts.index(ctx)
+                upd = trainer_subwords._updaters[ctx_idx]
+                assert len(trainer_subwords._params) == 1
+                for i, param in enumerate(trainer_subwords._params):
+                    arr = param.list_data()[ctx_idx]
+                    upd(i, subword_fake_grad, arr)
 
             return (centers.as_in_context(ctx),
                     context_negatives.as_in_context(ctx),
@@ -717,24 +710,6 @@ def train(args):
                     trainer_subwords.step(batch_size=1)
                     if not args.no_lazy_update:
                         trainer_subwords._optimizer.lazy_update = True
-
-                # Push/pull kvstore
-                if len(context) > 1:
-                    for param_idx, param in enumerate(params_emb_in):
-                        kvstore_emb_in.push(param_idx, param.grad(ctx))
-                        if (i + 1) % args.kvstore_pull_interval == 0:
-                            kvstore_emb_in.pull(param_idx, param.list_data())
-                    for param_idx, param in enumerate(params_emb_out):
-                        kvstore_emb_out.push(param_idx, param.grad(ctx))
-                        if (i + 1) % args.kvstore_pull_interval == 0:
-                            kvstore_emb_out.pull(param_idx, param.list_data())
-                    if args.subword_network.lower():
-                        for param_idx, param in enumerate(params_subwords):
-                            kvstore_subwords.push(param_idx, param.list_grad())
-                            if ((i + 1) / len(context)) % args.kvstore_pull_interval == 0:
-                                kvstore_subwords.pull(param_idx, param.list_data())
-
-
 
             # Logging
             log_wc += loss.shape[0]
