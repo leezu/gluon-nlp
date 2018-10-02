@@ -119,7 +119,7 @@ def parse_args():
 
     # Optimization options
     group = parser.add_argument_group('Optimization arguments')
-    group.add_argument('--optimizer', type=str, default='adagrad')
+    group.add_argument('--optimizer', type=str, default='groupadagrad')
     group.add_argument('--lr', type=float, default=0.1)
     group.add_argument('--seed', type=int, default=1, help='random seed')
 
@@ -508,7 +508,7 @@ def train(args):
 
             loss.backward()
             num_update += len(label)
-            if args.optimizer.lower() != 'adagrad':
+            if 'adagrad' not in args.optimizer.lower():
                 trainer.set_learning_rate(
                     max(0.0001, args.lr * (1 - progress)))
 
