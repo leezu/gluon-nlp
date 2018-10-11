@@ -21,7 +21,6 @@
 """Word embedding models."""
 
 import mxnet as mx
-import numpy as np
 
 import gluonnlp as nlp
 
@@ -58,12 +57,14 @@ class Net(mx.gluon.HybridBlock):
     # pylint: disable=abstract-method
     def __init__(self, token_to_idx, output_dim, batch_size, negatives_weights,
                  subword_function=None, num_negatives=5, smoothing=0.75,
-                 sparse_grad=True, dtype='float32', **kwargs):
+                 sparse_grad=True, dtype='float32', index_dtype='int64',
+                 **kwargs):
         super(Net, self).__init__(**kwargs)
 
         self._kwargs = dict(
             input_dim=len(token_to_idx), output_dim=output_dim, dtype=dtype,
-            sparse_grad=sparse_grad, num_negatives=num_negatives)
+            index_dtype=index_dtype, sparse_grad=sparse_grad,
+            num_negatives=num_negatives)
 
         with self.name_scope():
             if subword_function is not None:
@@ -88,7 +89,7 @@ class Net(mx.gluon.HybridBlock):
 
             self.negatives_sampler = nlp.data.UnigramCandidateSampler(
                 weights=negatives_weights**smoothing, shape=(batch_size, ),
-                dtype='int64')
+                dtype=index_dtype)
 
     def __getitem__(self, tokens):
         return self.embedding[tokens]
@@ -98,7 +99,7 @@ class SG(Net):
     """SkipGram network"""
 
     # pylint: disable=arguments-differ
-    def hybrid_forward(self, F, center, context, center_words):
+    def hybrid_forward(self, F, center, context, center_words, weights=None):
         """SkipGram forward pass.
 
         Parameters
@@ -115,6 +116,9 @@ class SG(Net):
             Dense array of center words of shape (batch_size, ). Only used for
             row-wise independently masking negatives equal to one of
             center_words.
+        weights : mxnet.nd.NDArray or mxnet.sym.Symbol, optional
+            Dense array of positive center-context word pair weights of shape
+            (batch_size, ).
         """
 
         # negatives sampling
@@ -127,14 +131,20 @@ class SG(Net):
             mask.append(mask_.min(axis=0))
 
         negatives = F.stack(*negatives, axis=1)
-        mask = F.stack(*mask, axis=1).astype(np.float32)
+        mask = F.stack(*mask, axis=1).astype(self._kwargs['dtype'])
 
         # center - context pairs
         emb_center = self.embedding(center).expand_dims(1)
         emb_context = self.embedding_out(context).expand_dims(2)
         pred_pos = F.batch_dot(emb_center, emb_context).squeeze()
-        loss_pos = (F.relu(pred_pos) - pred_pos + F.Activation(
-            -F.abs(pred_pos), act_type='softrelu')) / (mask.sum(axis=1) + 1)
+        if weights is not None:
+            loss_pos = weights * (F.relu(pred_pos) - pred_pos + F.Activation(
+                -F.abs(pred_pos), act_type='softrelu')) / (
+                    mask.sum(axis=1) + 1)
+        else:
+            loss_pos = (F.relu(pred_pos) - pred_pos + F.Activation(
+                -F.abs(pred_pos), act_type='softrelu')) / (
+                    mask.sum(axis=1) + 1)
 
         # center - negatives pairs
         emb_negatives = self.embedding_out(negatives).reshape(
@@ -175,7 +185,7 @@ class CBOW(Net):
             mask.append(negatives[-1] != center)
 
         negatives = F.stack(*negatives, axis=1)
-        mask = F.stack(*mask, axis=1).astype(np.float32)
+        mask = F.stack(*mask, axis=1).astype(self._kwargs['dtype'])
 
         # context - center samples
         emb_context = self.embedding(context).expand_dims(1)

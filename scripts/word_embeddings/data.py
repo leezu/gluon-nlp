@@ -22,23 +22,23 @@
 
 __all__ = [
     'WikiDumpStream', 'text8', 'wiki', 'transform_data', 'skipgram_lookup',
-    'cbow_lookup']
+    'cbow_lookup', 'ShuffledBatchedStream']
 
-import math
-import warnings
+import functools
 import io
-import json
-import os
 import itertools
+import json
+import math
+import os
+import warnings
 
 import mxnet as mx
 import numpy as np
 
 import gluonnlp as nlp
 from gluonnlp import Vocab
-from gluonnlp.data import SimpleDatasetStream, CorpusDataset
 from gluonnlp.base import numba_njit
-
+from gluonnlp.data import CorpusDataset, SimpleDatasetStream
 from utils import print_time
 
 
@@ -218,7 +218,6 @@ def transform_data(data, vocab, idx_to_counts, cbow, ngram_buckets, ngrams,
                 len(subwordidxs) for subwordidxs in idx_to_subwordidxs])
             subwordidxsptr = np.concatenate([
                 np.zeros(1, dtype=np.int64), subwordidxsptr])
-            import functools
             if cbow:
                 subword_lookup = functools.partial(
                     cbow_lookup, subwordidxs=subwordidxs,
@@ -294,6 +293,73 @@ class UnchainStream(nlp.data.DataStream):
 
     def __iter__(self):
         return iter(itertools.chain.from_iterable(self._stream))
+
+
+class ShuffledBatchedStream(nlp.data.DataStream):
+    """Shuffle a Dataset and batch it
+
+    Parameters
+    ----------
+    dataset : mxnet.gluon.Dataset
+    batch_size : int
+
+    """
+
+    def __init__(self, dataset, batch_size):
+        self._batch_size = batch_size
+        self._data = dataset
+
+        index_dtype = 'int32'
+        if len(self._data) >= np.iinfo(np.int32).max:
+            index_dtype = 'int64'
+        self._indices = mx.nd.arange(len(self._data), dtype=index_dtype)
+
+    def __len__(self):
+        return len(self._data) // self._batch_size
+
+    def __iter__(self):
+        """Shuffle the dataset in place and return a stream of batches."""
+        indices = self._indices
+        bs = self._batch_size
+        for i in range(len(self)):
+            batch_indices = indices[bs * i:bs * (i + 1)]
+            yield self._data[batch_indices]
+
+
+class ArrayDataset(mx.gluon.data.Dataset):
+    """A dataset that combines multiple dataset-like objects, e.g.
+    Datasets, lists, arrays, etc.
+
+    The i-th sample is defined as `(x1[i], x2[i], ...)`.
+
+    Unlike mx.gluon.data.ArrayDataset this version does not convert it's input
+    to numpy. See https://github.com/apache/incubator-mxnet/issues/13076
+
+    Parameters
+    ----------
+    *args : one or more dataset-like objects
+        The data arrays.
+
+    """
+
+    def __init__(self, *args):
+        assert len(args) > 0, "Needs at least 1 arrays"
+        self._length = len(args[0])
+        self._data = []
+        for i, data in enumerate(args):
+            assert len(data) == self._length, \
+                "All arrays must have the same length; array[0] has length %d " \
+                "while array[%d] has %d." % (self._length, i+1, len(data))
+            self._data.append(data)
+
+    def __getitem__(self, idx):
+        if len(self._data) == 1:
+            return self._data[0][idx]
+        else:
+            return tuple(data[idx] for data in self._data)
+
+    def __len__(self):
+        return self._length
 
 
 @numba_njit
