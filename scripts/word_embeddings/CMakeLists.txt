@@ -59,3 +59,9 @@ if(OpenMP_CXX_FOUND)
     target_link_libraries(cooccur PUBLIC OpenMP::OpenMP_CXX)
 endif()
 
+# ** PPMI
+add_executable(ppmi tools/ppmi.cc)
+target_include_directories(ppmi PUBLIC extern/cnpy)
+target_include_directories(ppmi PUBLIC extern/CLI11/include)
+target_include_directories(ppmi PUBLIC extern/range-v3/include)
+target_link_libraries(ppmi PUBLIC cnpy)
