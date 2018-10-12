@@ -77,11 +77,16 @@ def parse_args():
     # Computation options
     group = parser.add_argument_group('Computation arguments')
     group.add_argument(
-        '--batch-size',
+        '--min-batch-size',
         type=int,
-        default=4096,
+        default=2**16,
         help='Batch size for training.')
-    group.add_argument('--epochs', type=int, default=5, help='Epoch limit')
+    group.add_argument(
+        '--max-batch-size',
+        type=int,
+        default=2**20,
+        help='Batch size for training.')
+    group.add_argument('--epochs', type=int, default=50, help='Epoch limit')
     group.add_argument(
         '--gpu',
         type=int,
@@ -333,11 +338,19 @@ def train(args):
         logging.info('Co-occurrence matrix is large. '
                      'Using int64 to represent sample indices.')
     indices = mx.nd.arange(counts.shape[0], dtype=index_dtype)
+    bs = args.min_batch_size
     for epoch in range(args.epochs):
         # Logging variables
         log_wc = 0
         log_start_time = time.time()
         log_avg_loss = 0
+
+        if epoch > 0:
+            bs = min(args.min_batch_size * 2**epoch, args.max_batch_size)
+
+        num_batches = indices.shape[0] // bs
+        logging.info('Epoch {}: Using batch size {} ({} batches)'.format(
+            epoch, bs, num_batches))
 
         mx.nd.shuffle(indices, indices)  # inplace shuffle
         bs = args.batch_size
@@ -367,7 +380,7 @@ def train(args):
                                  epoch, i + 1, num_batches, log_avg_loss,
                                  wps / 1000, log_wc / 1000))
                 log_dict = dict(
-                    global_step=epoch * len(indices) + i * args.batch_size,
+                    global_step=epoch * len(indices) + i * bs,
                     epoch=epoch,
                     batch=i + 1,
                     loss=log_avg_loss,
