@@ -74,8 +74,14 @@ def parse_args():
 
     # Computation options
     group = parser.add_argument_group('Computation arguments')
-    group.add_argument('--batch-size', type=int, default=65536,
+    group.add_argument('--min-batch-size', type=int, default=2**7,
                        help='Batch size for training.')
+    group.add_argument('--batch-size', type=int, default=2**16,
+                       help='Batch size for training.')
+    group.add_argument(
+        '--max-batches', type=int, default=None,
+        help='Maximum number of batches to iterate over in one epoch.'
+        'If None, chosen based on number of batches for --batch-size')
     group.add_argument('--epochs', type=int, default=50, help='Epoch limit')
     group.add_argument(
         '--gpu', type=int, nargs='+',
@@ -296,14 +302,28 @@ def train(args):
         logging.info('Co-occurrence matrix is large. '
                      'Using int64 to represent sample indices.')
     indices = mx.nd.arange(counts.shape[0], dtype=index_dtype)
+    bs = args.min_batch_size
+
+    if args.max_batches is None:
+        max_batches = indices.shape[0] // args.batch_size
+    else:
+        max_batches = args.max_batches
+
     for epoch in range(args.epochs):
         # Logging variables
         log_wc = 0
         log_start_time = time.time()
         log_avg_loss = 0
 
-        mx.nd.shuffle(indices, indices)  # inplace shuffle
-        bs = args.batch_size
+        if epoch > 0:
+            bs = min(args.min_batch_size * 2**epoch, args.batch_size)
+
+        num_batches = indices.shape[0] // bs
+        logging.info('Epoch {}: Using batch size {} ({} batches)'.format(
+            epoch, bs, num_batches))
+
+        with print_time('shuffle data'):
+            mx.nd.shuffle(indices, indices)  # inplace shuffle
         num_batches = indices.shape[0] // bs
         for i in range(num_batches):
             batch_indices = indices[bs * i:bs * (i + 1)]
@@ -329,10 +349,9 @@ def train(args):
                              'throughput={:.2f}K wps, wc={:.2f}K'.format(
                                  epoch, i + 1, num_batches, log_avg_loss,
                                  wps / 1000, log_wc / 1000))
-                log_dict = dict(
-                    global_step=epoch * len(indices) + i * args.batch_size,
-                    epoch=epoch, batch=i + 1, loss=log_avg_loss,
-                    wps=wps / 1000)
+                log_dict = dict(global_step=epoch * len(indices) + i * bs,
+                                epoch=epoch, batch=i + 1, loss=log_avg_loss,
+                                wps=wps / 1000)
                 log(args, log_dict)
 
                 log_start_time = time.time()
@@ -344,6 +363,9 @@ def train(args):
                     mx.nd.waitall()
                 with print_time('evaluate'):
                     evaluate(args, model, vocab, i + num_batches * epoch)
+
+            if i > max_batches:
+                break
 
     # Evaluate
     with print_time('mx.nd.waitall()'):
