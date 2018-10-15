@@ -79,13 +79,18 @@ def parse_args():
     group.add_argument(
         '--min-batch-size',
         type=int,
-        default=2**16,
+        default=2**7,
         help='Batch size for training.')
     group.add_argument(
         '--max-batch-size',
         type=int,
-        default=2**20,
+        default=2**16,
         help='Batch size for training.')
+    group.add_argument(
+        '--max-batches',
+        type=int,
+        default=2**12,
+        help='Maximum number of batches to iterate over in one epoch.')
     group.add_argument('--epochs', type=int, default=50, help='Epoch limit')
     group.add_argument(
         '--gpu',
@@ -396,6 +401,9 @@ def train(args):
                     mx.nd.waitall()
                 with print_time('evaluate'):
                     evaluate(args, model, vocab, i + num_batches * epoch)
+
+            if i > args.max_batches:
+                break
 
     # Evaluate
     with print_time('mx.nd.waitall()'):
