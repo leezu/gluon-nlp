@@ -125,6 +125,7 @@ def parse_args():
     group.add_argument('--seed', type=int, default=1, help='Random seed')
     group.add_argument('--dropout', type=float, default=0)
     group.add_argument('--quadratic-regularization', type=float, default=0)
+    group.add_argument('--tail-average-n', type=int, default=5)
 
     # Logging
     group = parser.add_argument_group('Logging arguments')
@@ -336,6 +337,32 @@ class GloVe(nlp.model.train.EmbeddingModel, mx.gluon.HybridBlock):
 
 
 # * Training code
+def prepare_tail_averaging(param_dict_avg, model, n):
+    if "pointer" not in param_dict_avg:
+        param_dict_avg["pointer"] = 0
+    for name, param in model.collect_params().items():
+        if name not in param_dict_avg:
+            param_dict_avg[name] = []
+
+        if len(param_dict_avg[name]) < n:
+            data = param.data(param.list_ctx()[0]).copyto(mx.cpu())
+            param_dict_avg[name].append(data)
+        else:
+            data = param.data(param.list_ctx()[0]).copyto(
+                param_dict_avg[name][param_dict_avg["pointer"]])
+            param_dict_avg["pointer"] = (param_dict_avg["pointer"] + 1) % n
+
+
+def tail_average(param_dict_avg, model):
+    for name, param in model.collect_params().items():
+        assert name in param_dict_avg
+        data = param_dict_avg[name][0].copy()
+        for i in range(1, len(param_dict_avg[name])):
+            data += param_dict_avg[name][i]
+        data /= len(param_dict_avg[name])
+        param.set_data(data)
+
+
 def train(args):
     """Training helper."""
     vocab, row, col, counts = get_train_data(args)
@@ -362,6 +389,8 @@ def train(args):
                      'Using int64 to represent sample indices.')
     indices = mx.nd.arange(counts.shape[0], dtype=index_dtype)
     bs = args.min_batch_size
+    if args.tail_average_n:
+        param_dict_avg = {}
     for epoch in range(args.epochs):
         # Logging variables
         log_wc = 0
@@ -422,6 +451,14 @@ def train(args):
 
             if i > args.max_batches:
                 break
+
+        # Tail averaging
+        if args.tail_average_n:
+            prepare_tail_averaging(param_dict_avg, model,
+                                   args.tail_average_n)
+
+    if args.tail_average_n:
+        tail_average(param_dict_avg, model)
 
     # Evaluate
     with print_time('mx.nd.waitall()'):
