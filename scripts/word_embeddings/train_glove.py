@@ -79,7 +79,7 @@ def parse_args():
     group.add_argument(
         '--min-batch-size',
         type=int,
-        default=2**7,
+        default=2**l7,
         help='Batch size for training.')
     group.add_argument(
         '--max-batch-size',
@@ -124,6 +124,7 @@ def parse_args():
     group.add_argument('--lr', type=float, default=0.1, help='Learning rate')
     group.add_argument('--seed', type=int, default=1, help='Random seed')
     group.add_argument('--dropout', type=float, default=0)
+    group.add_argument('--quadratic-regularization', type=float, default=0)
 
     # Logging
     group = parser.add_argument_group('Logging arguments')
@@ -194,13 +195,24 @@ def get_train_data(args):
 
 # * Gluon Block definition
 class GloVe(nlp.model.train.EmbeddingModel, mx.gluon.HybridBlock):
-    """GloVe EmbeddingModel"""
+    """GloVe EmbeddingModel
+
+    Parameters
+    ----------
+    quadratic_regularization : float, default = 0
+        Weight of quadratic regularization term according to Mu, C., Yang, G.,
+        & Yan, Z., Revisiting skip-gram negative sampling model with
+        regularization, CoRR, abs/1804.00306(), (2018).
+
+    """
+
     def __init__(self,
                  token_to_idx,
                  embedding_size,
                  x_max,
                  alpha,
                  dropout=0,
+                 quadratic_regularization=0,
                  weight_initializer=None,
                  bias_initializer=mx.initializer.Zero(),
                  sparse_grad=True,
@@ -218,6 +230,7 @@ class GloVe(nlp.model.train.EmbeddingModel, mx.gluon.HybridBlock):
         self._x_max = x_max
         self._alpha = alpha
         self._dropout = dropout
+        self._quadratic_regularization = quadratic_regularization
 
         with self.name_scope():
             self.source_embedding = mx.gluon.nn.Embedding(
@@ -279,6 +292,11 @@ class GloVe(nlp.model.train.EmbeddingModel, mx.gluon.HybridBlock):
         weight = F.clip(
             ((counts / self._x_max)**self._alpha), a_min=0, a_max=1).squeeze()
         loss = weight * F.square(tmp)
+
+        if self._quadratic_regularization:
+            loss = loss + self._quadratic_regularization / 2 * (
+                F.sum(F.square(emb_in)) + F.sum(F.square(emb_out)))
+
         return loss
 
     def __contains__(self, token):
