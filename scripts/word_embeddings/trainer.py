@@ -38,7 +38,7 @@ def add_parameters(parser):
                        'so that their norm does not surpass this.')
 
     group = parser.add_argument_group('Word level optimization arguments')
-    group.add_argument('--optimizer', type=str, default='proximalgroupadagrad')
+    group.add_argument('--optimizer', type=str, default='groupadagrad')
     group.add_argument('--optimizer-eps', type=float)
     group.add_argument('--adagrad-groupwise-lr', action='store_true')
     group.add_argument('--adagrad-decay-states', action='store_true')
@@ -74,7 +74,7 @@ def add_parameters(parser):
     group = parser.add_argument_group(
         'Sparse subword network optimization arguments')
     group.add_argument('--subword-sparse-optimizer', type=str,
-                       default='proximalgroupadagrad',
+                       default='groupadagrad',
                        help='Optimizer used to train subword network.')
     group.add_argument('--subword-sparse-optimizer-eps', type=float)
     group.add_argument('--subword-sparse-lr', type=float, default=0.3,
@@ -88,21 +88,23 @@ def add_parameters(parser):
 
 
 def get_embedding_in_trainer(args, params, num_words):
-    if 'proximal' in args.optimizer.lower():
-        if not args.ngram_buckets and args.l2 != 0:
-            warnings.warn('Enabling sparsity regularization {} '
-                          'without having a subword net. '.format(args.l2))
-        l2 = args.l2 * 1 / num_words
-        logging.info('Setting l2 sparsity factor for words '
-                     'to {}'.format(l2))
-        kwargs = dict(learning_rate=args.lr, l2_regularization_strength=l2)
-        if args.optimizer.lower() == 'proximalsgd':
-            kwargs = dict(
-                clip_group_gradient_norm=args.clip_group_gradient_norm,
-                **kwargs)
-        optimizer = mx.optimizer.Optimizer.create_optimizer(
-            args.optimizer, **kwargs)
-    elif args.optimizer.lower() in ['sgd', 'adam', 'adagrad', 'ftml']:
+    # if 'proximal' in args.optimizer.lower():
+    #     if not args.ngram_buckets and args.l2 != 0:
+    #         warnings.warn('Enabling sparsity regularization {} '
+    #                       'without having a subword net. '.format(args.l2))
+    #     l2 = args.l2 * 1 / num_words
+    #     logging.info('Setting l2 sparsity factor for words '
+    #                  'to {}'.format(l2))
+    #     kwargs = dict(learning_rate=args.lr, l2_regularization_strength=l2)
+    #     if args.optimizer.lower() == 'proximalsgd':
+    #         kwargs = dict(
+    #             clip_group_gradient_norm=args.clip_group_gradient_norm,
+    #             **kwargs)
+    #     optimizer = mx.optimizer.Optimizer.create_optimizer(
+    #         args.optimizer, **kwargs)
+    if args.optimizer.lower() in [
+            'sgd', 'adam', 'adagrad', 'ftml', 'groupadagrad'
+    ]:
         if args.optimizer_eps:
             optimizer = mx.optimizer.Optimizer.create_optimizer(
                 args.optimizer, learning_rate=args.lr, eps=args.optimizer_eps)
@@ -122,12 +124,9 @@ def get_embedding_in_trainer(args, params, num_words):
 
 
 def get_embedding_out_trainer(args, params):
-    if args.optimizer.lower() == 'proximalgroupadagrad':
-        optimizer = mx.optimizer.Optimizer.create_optimizer(
-            args.optimizer, learning_rate=args.lr,
-            # Ignore group sparsity for context matrix
-            l2_regularization_strength=0)
-    elif args.optimizer.lower() in ['sgd', 'adam', 'adagrad', 'ftml']:
+    if args.optimizer.lower() in [
+            'sgd', 'adam', 'adagrad', 'ftml', 'groupadagrad'
+    ]:
         if args.optimizer_eps:
             optimizer = mx.optimizer.Optimizer.create_optimizer(
                 args.optimizer, learning_rate=args.lr, eps=args.optimizer_eps)
@@ -155,22 +154,26 @@ def get_subword_trainer(args, params, num_subword_units):
 
 
 def _get_sparse_subword_trainer(args, params, num_subword_units):
-    if 'proximal' in args.subword_sparse_optimizer.lower():
-        l2 = args.subword_sparse_l2 * 1 / num_subword_units
-        logging.info('Setting l2 sparsity factor for subwords '
-                     'to {}'.format(l2))
-        kwargs = dict(learning_rate=args.subword_sparse_lr,
-                      l2_regularization_strength=l2)
-        if args.subword_sparse_optimizer.lower() == 'proximalsgd':
-            kwargs = dict(
-                clip_group_gradient_norm=args.clip_group_gradient_norm,
-                **kwargs)
-        optimizer = mx.optimizer.Optimizer.create_optimizer(
-            args.subword_sparse_optimizer, **kwargs)
-    elif args.subword_sparse_optimizer.lower() in ['sgd', 'adagrad', 'adam', 'ftml']:
+    # if 'proximal' in args.subword_sparse_optimizer.lower():
+    #     l2 = args.subword_sparse_l2 * 1 / num_subword_units
+    #     logging.info('Setting l2 sparsity factor for subwords '
+    #                  'to {}'.format(l2))
+    #     kwargs = dict(learning_rate=args.subword_sparse_lr,
+    #                   l2_regularization_strength=l2)
+    #     if args.subword_sparse_optimizer.lower() == 'proximalsgd':
+    #         kwargs = dict(
+    #             clip_group_gradient_norm=args.clip_group_gradient_norm,
+    #             **kwargs)
+    #     optimizer = mx.optimizer.Optimizer.create_optimizer(
+    #         args.subword_sparse_optimizer, **kwargs)
+    if args.subword_sparse_optimizer.lower() in [
+            'sgd', 'adagrad', 'adam', 'ftml', 'groupadagrad'
+    ]:
         if args.optimizer_eps:
             optimizer = mx.optimizer.Optimizer.create_optimizer(
-                args.optimizer, learning_rate=args.subword_sparse_lr, eps=args.optimizer_eps)
+                args.optimizer,
+                learning_rate=args.subword_sparse_lr,
+                eps=args.optimizer_eps)
         else:
             optimizer = mx.optimizer.Optimizer.create_optimizer(
                 args.optimizer, learning_rate=args.subword_sparse_lr)
