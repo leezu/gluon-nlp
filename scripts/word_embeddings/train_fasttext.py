@@ -198,6 +198,9 @@ def train(args):
         log_start_time = time.time()
         log_avg_loss = 0
 
+        from mxnet import profiler
+        profiler.set_config(profile_all=True, aggregate_stats=True, filename='profile.json')
+        profiler.set_state('run')
         for i, batch in enumerate(batches):
             ctx = context[i % len(context)]
             batch = [array.as_in_context(ctx) for array in batch]
@@ -237,6 +240,8 @@ def train(args):
                     mx.nd.waitall()
                 with print_time('evaluate'):
                     evaluate(args, embedding, vocab, num_update)
+
+        profiler.set_state('stop')
 
     # Evaluate
     with print_time('mx.nd.waitall()'):
