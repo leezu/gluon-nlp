@@ -99,7 +99,7 @@ class SG(Net):
     """SkipGram network"""
 
     # pylint: disable=arguments-differ
-    def hybrid_forward(self, F, center, context, center_words, weights=None):
+    def hybrid_forward(self, F, center, context, center_words):
         """SkipGram forward pass.
 
         Parameters
@@ -137,6 +137,7 @@ class SG(Net):
         emb_center = self.embedding(center).expand_dims(1)
         emb_context = self.embedding_out(context).expand_dims(2)
         pred_pos = F.batch_dot(emb_center, emb_context).squeeze()
+        weights = None
         if weights is not None:
             loss_pos = weights * (F.relu(pred_pos) - pred_pos + F.Activation(
                 -F.abs(pred_pos), act_type='softrelu')) / (

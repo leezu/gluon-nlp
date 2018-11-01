@@ -85,12 +85,12 @@ def parse_args():
     group.add_argument(
         '--negative', type=int, default=5, help='Number of negative samples '
         'per source-context word pair.')
-    group.add_argument(
-        '--counts-min', type=int, default=2,
-        help='Remove all co-occurrences with less than --counts-min count.')
-    group.add_argument(
-        '--counts-max', type=int, default=5,
-        help='Set all counts greater --counts-max to --counts-max')
+    # group.add_argument(
+    #     '--counts-min', type=int, default=2,
+    #     help='Remove all co-occurrences with less than --counts-min count.')
+    # group.add_argument(
+    #     '--counts-max', type=int, default=5,
+    #     help='Set all counts greater --counts-max to --counts-max')
 
     # Optimization options
     group = parser.add_argument_group('Optimization arguments')
@@ -175,10 +175,10 @@ def get_train_data(args):
 
     cooccur = np.load(args.cooccurrences)
     row, col, counts = cooccur['row'], cooccur['col'], cooccur['data']
-    valid_count = counts > args.counts_min
-    row, col, counts = row[valid_count], col[valid_count], counts[valid_count]
+    # valid_count = counts > args.counts_min
+    # row, col, counts = row[valid_count], col[valid_count], counts[valid_count]
     np.sqrt(counts, out=counts)
-    counts[counts > args.counts_max] = args.counts_max
+    # counts[counts > args.counts_max] = args.counts_max
 
     index_dtype = 'int32'
     if row.max() >= np.iinfo(np.int32).max:
@@ -253,7 +253,7 @@ def train(args):
             ctx = context[i % len(context)]
             batch = [array.as_in_context(ctx) for array in batch]
             with mx.autograd.record():
-                loss = embedding(*batch)
+                loss = embedding(*batch[:-1])
             loss.backward()
 
             if len(context) == 1 or (i + 1) % len(context) == 0:
@@ -297,6 +297,8 @@ def train(args):
     with print_time('evaluate'):
         evaluate(args, embedding, vocab, num_batches * args.epochs,
                  eval_analogy=not args.no_eval_analogy)
+
+    import ipdb; ipdb.set_trace()
 
     # Save params
     with print_time('save parameters'):

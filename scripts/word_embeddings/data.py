@@ -407,11 +407,13 @@ def skipgram_lookup(indices, subwordidxs, subwordidxsptr, offset=0):
 
         row.append(i)
         col.append(idx)
-        data.append(1 / (1 + end - start))
+        data.append(1)
+        # data.append(1 / (1 + end - start))
         for subword in subwordidxs[start:end]:
             row.append(i)
             col.append(subword + offset)
-            data.append(1 / (1 + end - start))
+            data.append(0)
+            # data.append(1 / (1 + end - start))
 
     return (np.array(data, dtype=np.float32), np.array(row, dtype=np.int64),
             np.array(col, dtype=np.int64))

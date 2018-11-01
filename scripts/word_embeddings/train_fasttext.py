@@ -203,6 +203,9 @@ def train(args):
                 loss = embedding(*batch)
             loss.backward()
 
+            grad_ = embedding.embedding.weight.grad(ctx)
+            print(grad_.mean().asscalar(), grad_.max().asscalar())
+
             num_update += loss.shape[0]
             if len(context) == 1 or (i + 1) % len(context) == 0:
                 trainer.step(batch_size=1)
