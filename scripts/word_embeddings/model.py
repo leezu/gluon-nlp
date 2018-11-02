@@ -24,6 +24,7 @@ import mxnet as mx
 import numpy as np
 
 import gluonnlp as nlp
+from gluonnlp.base import _str_types
 
 
 class Net(mx.gluon.HybridBlock):
@@ -195,3 +196,217 @@ class CBOW(Net):
         loss_neg = loss_neg.sum(axis=1) / (mask.sum(axis=1) + 1)
 
         return loss_pos + loss_neg
+
+
+class _SGFM(mx.gluon.HybridBlock):
+    """SkipGram network"""
+
+    def __init__(self, token_to_idx, output_dim, batch_size, negatives_weights,
+                 num_subwords, num_negatives=5, smoothing=0.75,
+                 sparse_grad=True, dtype='float32', **kwargs):
+        super(_SGFM, self).__init__(**kwargs)
+        assert isinstance(token_to_idx, dict)
+        self._token_to_idx = token_to_idx
+        self._kwargs = dict(
+            input_dim=len(token_to_idx), output_dim=output_dim, dtype=dtype,
+            sparse_grad=sparse_grad, num_negatives=num_negatives)
+        grad_stype = 'row_sparse' if sparse_grad else 'default'
+
+        self.w = self.params.get('w', shape=(len(token_to_idx) + num_subwords,
+                                             1), init=mx.init.Zero(),
+                                 dtype=dtype, allow_deferred_init=True,
+                                 grad_stype=grad_stype)
+        self.w0 = self.params.get('w0', shape=(1, 1), init=mx.init.Zero(),
+                                  dtype=dtype, allow_deferred_init=True)
+
+        with self.name_scope():
+            self.v_out = mx.gluon.nn.Embedding(
+                len(token_to_idx), output_dim=output_dim,
+                weight_initializer=mx.init.Zero(), sparse_grad=sparse_grad,
+                dtype=dtype)
+            self.w_out = mx.gluon.nn.Embedding(
+                len(token_to_idx), output_dim=1,
+                weight_initializer=mx.init.Zero(), sparse_grad=sparse_grad,
+                dtype=dtype)
+            self.negatives_sampler = nlp.data.UnigramCandidateSampler(
+                weights=negatives_weights**smoothing, shape=(batch_size, ),
+                dtype='int64')
+
+    # pylint: disable=arguments-differ
+    def hybrid_forward(self, F, center, context, center_words, v, w, w0):
+        """SkipGram forward pass.
+
+        Parameters
+        ----------
+        center_weighted : CSR (batch_size, len(vocab) + ngram_buckets)
+        center_ones : CSR (batch_size, ?) → variable length, but for each batch
+        context : Dense (batch_size, 1)
+        center_words :
+        v : mxnet.nd.NDArray
+        # TODO weight
+        """
+        # negatives sampling
+        negatives = []
+        mask = []
+        for _ in range(self._kwargs['num_negatives']):
+            negatives.append(self.negatives_sampler(center_words))
+            mask_ = negatives[-1] != center_words
+            mask_ = F.stack(mask_, (negatives[-1] != context))
+            mask.append(mask_.min(axis=0))
+        negatives = F.stack(*negatives, axis=1)
+        mask = F.stack(*mask, axis=1).astype(np.float32)
+
+        # bias
+        w1 = F.broadcast_add(F.dot(center, w), w0)
+
+        # squared terms for subtracting self interactions
+        v_square = F._internal._square_sum(v, axis=1, keepdims=True)
+        # TODO this currently triggers a fallback to default stype
+        # With BlockGrad, another bug is triggered:
+        # src/operator/tensor/././cast_storage-inl.cuh:606: Check failed:
+        # ctx.requested.size() > 0 (0 vs. 0)
+        # center_square = F.BlockGrad(center.square())
+        center_square = center.square()
+        bd = F.dot(center_square, v_square)
+
+        # interactions
+        w2 = F.dot(center, v)
+        w2_squared = 0.5 * F.square(w2)
+
+        # putting everything together for true samples (center - context)
+        # (weights for contexts is implicitly taken to be 1)
+        w2_squared_sum = F.sum(
+            w2_squared + 0.5 * F.square(self.v_out(context)), axis=1,
+            keepdims=True)
+        sum_all = w2_squared_sum + w1 + self.w_out(context)
+        self_interaction = 0.5 * (
+            bd + F.sum(F.square(self.v_out(context)), axis=1, keepdims=True))
+        pred_pos = sum_all - self_interaction
+
+        loss_pos = (F.relu(pred_pos) - pred_pos + F.Activation(
+            -F.abs(pred_pos), act_type='softrelu')) / (
+                mask.sum(axis=1, keepdims=True) + 1)
+
+        # putting everything together for negatives (center - negative)
+        # (weights for negatives is implicitly taken to be 1)
+        w2_squared_sum = F.sum(
+            F.broadcast_add(
+                w2_squared.expand_dims(1),
+                0.5 * F.square(self.v_out(negatives))), axis=2, keepdims=True)
+        sum_all = F.broadcast_add(
+            F.broadcast_add(w2_squared_sum, w1.expand_dims(1)),
+            self.w_out(negatives))
+        self_interaction = 0.5 * F.broadcast_add(
+            bd.expand_dims(1),
+            F.sum(F.square(self.v_out(negatives)), axis=2, keepdims=True))
+        pred_neg = (sum_all - self_interaction).reshape(
+            (-1, self._kwargs['num_negatives']))
+
+        loss_neg = (F.relu(pred_neg) + F.Activation(
+            -F.abs(pred_neg), act_type='softrelu')) * mask
+        loss_neg = loss_neg.sum(axis=1) / (mask.sum(axis=1) + 1)
+
+        return loss_pos.reshape((-1, )) + loss_neg
+
+
+class SGFM(mx.gluon.Block):
+    """SkipGram network"""
+
+    def __init__(self, token_to_idx, output_dim, batch_size, negatives_weights,
+                 subword_function=None, num_negatives=5, smoothing=0.75,
+                 sparse_grad=True, dtype='float32', **kwargs):
+        super(SGFM, self).__init__(**kwargs)
+        assert isinstance(token_to_idx, dict)
+        self._token_to_idx = token_to_idx
+        self._kwargs = dict(
+            input_dim=len(token_to_idx), output_dim=output_dim, dtype=dtype,
+            sparse_grad=sparse_grad, num_negatives=num_negatives)
+        grad_stype = 'row_sparse' if sparse_grad else 'default'
+
+        self._subword_function = subword_function
+        num_subwords = 0 if subword_function is None else len(subword_function)
+
+        self.weight = self.params.get(
+            'weight', shape=(len(token_to_idx) + num_subwords, output_dim),
+            init=mx.init.Uniform(scale=1 / output_dim), dtype=dtype,
+            stype=grad_stype, allow_deferred_init=True, grad_stype=grad_stype)
+
+        with self.name_scope():
+            self.sgfm = _SGFM(
+                token_to_idx=token_to_idx, output_dim=output_dim,
+                batch_size=batch_size, negatives_weights=negatives_weights,
+                num_subwords=num_subwords, num_negatives=num_negatives,
+                smoothing=smoothing, sparse_grad=sparse_grad, dtype=dtype)
+
+    def forward(self, center, context, center_words, row_ids):
+        """SkipGram forward pass.
+
+        Parameters
+        ----------
+        center_weighted : CSR (batch_size, len(vocab) + ngram_buckets)
+        center_ones : CSR (batch_size, ?) → variable length, but for each batch
+        context : Dense (batch_size, 1)
+        center_words :
+        row_ids : mxnet.nd.NDArray
+          row_ids for obtaining factor and bias term from row-sparse Parameters
+          with row_sparse_data()
+        # TODO weight
+        """
+        v = self.weight.row_sparse_data(row_ids)
+        return self.sgfm(center, context, center_words, v)
+
+    def __contains__(self, token):
+        # supports computing vector for any str that is at least either in the
+        # word level vocabulary or contains subwords
+        return (token in self._token_to_idx
+                or self._subword_function([token])[0])
+
+    def __getitem__(self, tokens):
+        """Looks up embedding vectors of text tokens.
+
+        Parameters
+        ----------
+        tokens : str or list of strs
+            A token or a list of tokens.
+
+        Returns
+        -------
+        mxnet.ndarray.NDArray:
+            The embedding vector(s) of the token(s). According to numpy
+            conventions, if `tokens` is a string, returns a 1-D NDArray
+            (vector); if `tokens` is a list of strings, returns a 2-D NDArray
+            (matrix) of shape=(len(tokens), vec_len).
+        """
+        squeeze = False
+        if isinstance(tokens, _str_types):
+            tokens = [tokens]
+            squeeze = True
+
+        data = []
+        row = []
+        col = []
+        subwords = self._subword_function(tokens)
+        offset = len(self._token_to_idx)
+        for i, (token, token_subwords) in enumerate(zip(tokens, subwords)):
+            if token not in self:
+                raise KeyError
+
+            if token in self._token_to_idx:
+                col.append(self._token_to_idx[token])
+                num = 1 + len(token_subwords)
+            else:
+                num = len(token_subwords)
+            data += [1.0 / num] * num
+            row += [i] * num
+            col += [s + offset for s in token_subwords]
+
+        x = mx.nd.sparse.csr_matrix(
+            (data, (row, col)), shape=(len(tokens), self.weight.shape[0]),
+            dtype=self._kwargs['dtype'], ctx=self.weight.list_ctx()[0])
+        row_ids = mx.nd.array(col, ctx=self.weight.list_ctx()[0])
+        emb = mx.nd.sparse.dot(x, self.weight.row_sparse_data(row_ids))
+
+        if squeeze:
+            return emb.squeeze()
+        else:
+            return emb

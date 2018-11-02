@@ -49,7 +49,7 @@ import numpy as np
 import gluonnlp as nlp
 import evaluation
 from utils import get_context, print_time
-from model import SG, CBOW
+from model import SG, CBOW, SGFM
 from data import transform_data, text8, wiki
 
 
@@ -140,7 +140,7 @@ def parse_args():
 
 def train(args):
     """Training helper."""
-    if not args.model.lower() in ['cbow', 'skipgram']:
+    if not args.model.lower() in ['cbow', 'skipgram', 'sgfm']:
         logging.error('Unsupported model %s.', args.model)
         sys.exit(1)
 
@@ -151,12 +151,20 @@ def train(args):
                                           args.wiki_language,
                                           args.max_vocab_size)
     data, batchify_fn, subword_function = transform_data(
-        data, vocab, idx_to_counts,
-        args.model.lower() == 'cbow', args.ngram_buckets, args.ngrams,
-        args.batch_size, args.window, args.frequent_token_subsampling)
+        data, vocab, idx_to_counts, args.model, args.ngram_buckets,
+        args.ngrams, args.batch_size, args.window,
+        args.frequent_token_subsampling)
     num_tokens = float(sum(idx_to_counts))
 
-    model = CBOW if args.model.lower() == 'cbow' else SG
+    if args.model.lower() == 'cbow':
+        model = CBOW
+    elif args.model.lower() == 'skipgram':
+        model = SG
+    elif args.model.lower() == 'sgfm':
+        model = SGFM
+    else:
+        sys.exit(1)
+
     embedding = model(token_to_idx=vocab.token_to_idx, output_dim=args.emsize,
                       batch_size=args.batch_size, num_negatives=args.negative,
                       negatives_weights=mx.nd.array(idx_to_counts),
@@ -217,9 +225,9 @@ def train(args):
                 # Due to subsampling, the overall number of batches is an upper
                 # bound
                 num_batches = num_tokens // args.batch_size
-                if args.model.lower() == 'skipgram':
+                if args.model.lower() in ['skipgram', 'sgfm']:
                     num_batches = (num_tokens * args.window * 2) // args.batch_size
-                else:
+                elif args.model.lower() == 'cbow':
                     num_batches = num_tokens // args.batch_size
                 logging.info('[Epoch {} Batch {}/{}] loss={:.4f}, '
                              'throughput={:.2f}K wps, wc={:.2f}K'.format(

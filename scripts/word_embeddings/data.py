@@ -129,7 +129,7 @@ def wiki(wiki_root, wiki_date, wiki_language, max_vocab_size=None):
     return data, vocab, idx_to_counts
 
 
-def transform_data(data, vocab, idx_to_counts, cbow, ngram_buckets, ngrams,
+def transform_data(data, vocab, idx_to_counts, model, ngram_buckets, ngrams,
                    batch_size, window_size, frequent_token_subsampling=1E-4,
                    dtype='float32', index_dtype='int64'):
     """Transform a DataStream of coded DataSets to a DataStream of batches.
@@ -150,8 +150,8 @@ def transform_data(data, vocab, idx_to_counts, cbow, ngram_buckets, ngrams,
         Each token is independently dropped with probability 1 - sqrt(t /
         (count / sum_counts)) where t is the hyperparameter
         frequent_token_subsampling.
-    cbow : boolean
-        If True, batches for CBOW are returned.
+    model : {"skipgram", "cbow", "sgfm"}
+        Specify the model type. Determines the batches.
     ngram_buckets : int
         Number of hash buckets to consider for the fastText
         nlp.vocab.NGramHashes subword function.
@@ -202,8 +202,8 @@ def transform_data(data, vocab, idx_to_counts, cbow, ngram_buckets, ngrams,
     data = data.transform(subsample)
 
     batchify = nlp.data.batchify.EmbeddingCenterContextBatchify(
-        batch_size=batch_size, window_size=window_size, cbow=cbow, dtype=dtype,
-        index_dtype=index_dtype)
+        batch_size=batch_size, window_size=window_size,
+        cbow=model.lower() == "cbow", dtype=dtype, index_dtype=index_dtype)
     data = data.transform(batchify)
 
     if ngram_buckets:
@@ -219,7 +219,7 @@ def transform_data(data, vocab, idx_to_counts, cbow, ngram_buckets, ngrams,
             subwordidxsptr = np.concatenate([
                 np.zeros(1, dtype=np.int64), subwordidxsptr])
             import functools
-            if cbow:
+            if model.lower() == "cbow":
                 subword_lookup = functools.partial(
                     cbow_lookup, subwordidxs=subwordidxs,
                     subwordidxsptr=subwordidxsptr, offset=len(vocab))
@@ -256,6 +256,17 @@ def transform_data(data, vocab, idx_to_counts, cbow, ngram_buckets, ngrams,
             shape=(len(centers), len(vocab)))
         return centers, contexts
 
+    def sg_fm_batch(centers, contexts):
+        """Create a batch for SG training objective with subwords."""
+        _, _, contexts_col = contexts
+        contexts = contexts_col
+        data, row, col = subword_lookup(centers.asnumpy())
+        centers_csr = mx.nd.sparse.csr_matrix(
+            (data, (row, col)), dtype=dtype,
+            shape=(len(centers), len(vocab) + ngram_buckets))
+        row_ids = mx.nd.array(np.unique(col), dtype=index_dtype)
+        return centers_csr, contexts, centers, row_ids
+
     def sg_fasttext_batch(centers, contexts):
         """Create a batch for SG training objective with subwords."""
         _, _, contexts_col = contexts
@@ -276,16 +287,21 @@ def transform_data(data, vocab, idx_to_counts, cbow, ngram_buckets, ngrams,
         return centers_csr, contexts, centers
 
     data = UnchainStream(data)
-    if cbow:
+    if model.lower() == "cbow":
         if ngram_buckets:
             return data, cbow_fasttext_batch, subword_function
         else:
             return data, cbow_batch, subword_function
-    else:
+    elif model.lower() == "skipgram":
         if ngram_buckets:
             return data, sg_fasttext_batch, subword_function
         else:
             return data, sg_batch, subword_function
+    elif model.lower() == "sgfm":
+        assert ngram_buckets
+        return data, sg_fm_batch, subword_function
+    else:
+        raise ValueError(model)
 
 
 class UnchainStream(nlp.data.DataStream):
