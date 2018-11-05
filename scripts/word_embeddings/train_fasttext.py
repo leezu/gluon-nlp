@@ -50,7 +50,7 @@ import gluonnlp as nlp
 import evaluation
 from utils import get_context, print_time
 from model import SG, CBOW
-from data import transform_data, text8, wiki
+from data import transform_data, text8, wiki, cached
 
 
 def parse_args():
@@ -63,11 +63,13 @@ def parse_args():
     group = parser.add_argument_group('Data arguments')
     group.add_argument('--data', type=str, default='text8',
                        help='Training dataset.')
-    group.add_argument('--wiki-root', type=str, default='text8',
+    group.add_argument('--wiki-root', type=str,
                        help='Root under which preprocessed wiki dump.')
-    group.add_argument('--wiki-language', type=str, default='text8',
+    group.add_argument('--wiki-language', type=str,
                        help='Language of wiki dump.')
     group.add_argument('--wiki-date', help='Date of wiki dump.')
+    group.add_argument('--cached-root', type=str,
+                       help='Root under which preprocessed wiki dump.')
 
     # Computation options
     group = parser.add_argument_group('Computation arguments')
@@ -150,10 +152,16 @@ def train(args):
         data, vocab, idx_to_counts = wiki(args.wiki_root, args.wiki_date,
                                           args.wiki_language,
                                           args.max_vocab_size)
+    elif args.data.lower() == 'cached':
+        data, vocab, idx_to_counts = cached(args.cached_root)
+    else:
+        logging.error('Unsupported dataset %s.', args.data)
+        sys.exit(1)
     data, batchify_fn, subword_function = transform_data(
         data, vocab, idx_to_counts,
         args.model.lower() == 'cbow', args.ngram_buckets, args.ngrams,
-        args.batch_size, args.window, args.frequent_token_subsampling)
+        args.batch_size, args.window, args.frequent_token_subsampling,
+        subsample=args.data.lower() != 'cached')
     num_tokens = float(sum(idx_to_counts))
 
     model = CBOW if args.model.lower() == 'cbow' else SG

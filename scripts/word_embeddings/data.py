@@ -24,21 +24,21 @@ __all__ = [
     'WikiDumpStream', 'text8', 'wiki', 'transform_data', 'skipgram_lookup',
     'cbow_lookup']
 
-import math
-import warnings
+import functools
 import io
-import json
-import os
 import itertools
+import json
+import math
+import os
+import warnings
 
 import mxnet as mx
 import numpy as np
 
 import gluonnlp as nlp
 from gluonnlp import Vocab
-from gluonnlp.data import SimpleDatasetStream, CorpusDataset
 from gluonnlp.base import numba_njit
-
+from gluonnlp.data import CorpusDataset, SimpleDatasetStream
 from utils import print_time
 
 
@@ -129,9 +129,56 @@ def wiki(wiki_root, wiki_date, wiki_language, max_vocab_size=None):
     return data, vocab, idx_to_counts
 
 
+def cached(path, frequent_token_subsampling=1E-4):
+    """Load cached data.
+
+    Parameters
+    ----------
+    path : str
+
+    Returns
+    -------
+    gluonnlp.data.DataStream
+        Each sample is a valid input to
+        gluonnlp.data.EmbeddingCenterContextBatchify.
+    gluonnlp.Vocab
+        Vocabulary of all tokens in the Wikipedia corpus as provided by
+        WikiDumpStream but with maximum size max_vocab_size.
+    idx_to_counts : list of int
+        Mapping from token indices to their occurrence-counts in the Wikipedia
+        corpus.
+
+    """
+    data = NPZStream(os.path.expanduser(path))
+    vocab, idx_to_counts = data.vocab, data.idx_to_counts
+
+    sum_counts = float(sum(idx_to_counts))
+    idx_to_pdiscard = np.array([
+        1 - math.sqrt(frequent_token_subsampling / (count / sum_counts))
+        for count in idx_to_counts])
+
+    def fused_subsample(npz):
+        sentences, ptr = npz[0]['sentences'], npz[0]['ptr']
+        rnd = np.random.uniform(0, 1, size=sentences.shape)
+        keep = rnd > idx_to_pdiscard[sentences]
+        new_lengths = [keep[:ptr[0]].sum()] + [
+            keep[ptr[i]:ptr[i + 1]].sum() for i in range(len(ptr) - 1)]
+        ptr = np.cumsum(new_lengths)
+        sentences = sentences[keep]
+        # Construct list of subsampled sentences with at least 2 tokens
+        data = [sentences[:ptr[0]]] if ptr[0] > 1 else []
+        data += [
+            sentences[ptr[i]:ptr[i + 1]] for i in range(len(ptr) - 1)
+            if ptr[i + 1] - ptr[i] > 1]
+        return mx.gluon.data.SimpleDataset(data)
+
+    data = data.transform(fused_subsample)
+    return data, vocab, idx_to_counts
+
+
 def transform_data(data, vocab, idx_to_counts, cbow, ngram_buckets, ngrams,
                    batch_size, window_size, frequent_token_subsampling=1E-4,
-                   dtype='float32', index_dtype='int64'):
+                   subsample=True, dtype='float32', index_dtype='int64'):
     """Transform a DataStream of coded DataSets to a DataStream of batches.
 
     Parameters
@@ -166,6 +213,8 @@ def transform_data(data, vocab, idx_to_counts, cbow, ngram_buckets, ngrams,
     frequent_token_subsampling : float
         Hyperparameter for subsampling. See idx_to_counts above for more
         information.
+    subsample : bool
+        If True, apply subsampling.
     dtype : str or np.dtype, default 'float32'
         Data type of data array.
     index_dtype : str or np.dtype, default 'int64'
@@ -188,18 +237,19 @@ def transform_data(data, vocab, idx_to_counts, cbow, ngram_buckets, ngrams,
     """
 
     # Apply transforms
-    sum_counts = float(sum(idx_to_counts))
-    idx_to_pdiscard = [
-        1 - math.sqrt(frequent_token_subsampling / (count / sum_counts))
-        for count in idx_to_counts]
+    if subsample:
+        sum_counts = float(sum(idx_to_counts))
+        idx_to_pdiscard = [
+            1 - math.sqrt(frequent_token_subsampling / (count / sum_counts))
+            for count in idx_to_counts]
 
-    def subsample(shard):
-        return [[
-            t for t, r in zip(sentence,
-                              np.random.uniform(0, 1, size=len(sentence)))
-            if r > idx_to_pdiscard[t]] for sentence in shard]
+        def subsample(shard):
+            return [[
+                t for t, r in zip(sentence,
+                                  np.random.uniform(0, 1, size=len(sentence)))
+                if r > idx_to_pdiscard[t]] for sentence in shard]
 
-    data = data.transform(subsample)
+        data = data.transform(subsample)
 
     batchify = nlp.data.batchify.EmbeddingCenterContextBatchify(
         batch_size=batch_size, window_size=window_size, cbow=cbow, dtype=dtype,
@@ -425,6 +475,66 @@ def cbow_lookup(context_row, context_col, subwordidxs, subwordidxsptr,
             np.array(col, dtype=np.int64))
 
 
+class NPZDataset(mx.gluon.data.SimpleDataset):
+    """Load a cached dataset.
+
+    Parameters
+    ----------
+    path : str
+        Path to a .npz
+
+    """
+
+    def __init__(self, path):
+        npz = np.load(path)
+        super(NPZDataset, self).__init__(data=[npz])
+
+
+class NPZStream(SimpleDatasetStream):
+    """Stream for preprocessed cached dumps.
+
+    A cache directory can be created with this script.
+
+    Parameters
+    ----------
+    path : str
+        Path to a folder storing the dataset.
+
+    Attributes
+    ----------
+    vocab : gluonnlp.Vocab
+        Vocabulary object constructed from vocab.json.
+    idx_to_counts : list[int]
+        Mapping from vocabulary word indices to word counts.
+
+    """
+
+    def __init__(self, path):
+        self._path = path
+
+        if not os.path.isdir(self._path):
+            raise ValueError('{} is not valid. '
+                             'Please make sure that the path exists and '
+                             'contains the preprocessed files.'.format(
+                                 self._path))
+
+        self._file_pattern = os.path.join(self._path, '*.npz')
+        super(NPZStream, self).__init__(dataset=NPZDataset,
+                                        file_pattern=self._file_pattern)
+
+    @property
+    def vocab(self):
+        path = os.path.join(self._path, 'vocab.json')
+        with io.open(path, 'r', encoding='utf-8') as in_file:
+            return Vocab.from_json(in_file.read())
+
+    @property
+    def idx_to_counts(self):
+        path = os.path.join(self._path, 'counts.json')
+        with io.open(path, 'r', encoding='utf-8') as in_file:
+            return json.load(in_file)
+
+
 class WikiDumpStream(SimpleDatasetStream):
     """Stream for preprocessed Wikipedia Dumps.
 
@@ -446,6 +556,9 @@ class WikiDumpStream(SimpleDatasetStream):
     eos : str or None, default None
         The token to add at the end of each sentence. If None, nothing is
         added.
+    kwargs
+        Further keyword arguments are passed to
+        gluonnlp.data.SimpleDatasetStream
 
     Attributes
     ----------
@@ -457,7 +570,7 @@ class WikiDumpStream(SimpleDatasetStream):
     """
 
     def __init__(self, root, language, date, skip_empty=True, bos=None,
-                 eos=None):
+                 eos=None, **kwargs):
         self._root = root
         self._language = language
         self._date = date
@@ -472,7 +585,7 @@ class WikiDumpStream(SimpleDatasetStream):
         self._file_pattern = os.path.join(self._path, '*.txt')
         super(WikiDumpStream, self).__init__(
             dataset=CorpusDataset, file_pattern=self._file_pattern,
-            skip_empty=skip_empty, bos=bos, eos=eos)
+            skip_empty=skip_empty, bos=bos, eos=eos, **kwargs)
 
     @property
     def vocab(self):
@@ -485,3 +598,76 @@ class WikiDumpStream(SimpleDatasetStream):
         path = os.path.join(self._path, 'counts.json')
         with io.open(path, 'r', encoding='utf-8') as in_file:
             return json.load(in_file)
+
+
+if __name__ == '__main__':
+    import argparse
+    import logging
+    import sys
+
+    logging.basicConfig()
+    logging.getLogger().setLevel(logging.INFO)
+
+    parser = argparse.ArgumentParser(
+        description='Data preprocessing for Embedding Training',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('--data', type=str, default='text8',
+                        help='Training dataset.')
+    parser.add_argument('--wiki-root', type=str,
+                        help='Root under which preprocessed wiki dump.')
+    parser.add_argument('--wiki-language', type=str,
+                        help='Language of wiki dump.')
+    parser.add_argument('--wiki-date', help='Date of wiki dump.')
+    parser.add_argument(
+        '--max-vocab-size', type=int,
+        help='Limit the number of words considered. '
+        'OOV words will be ignored.')
+    parser.add_argument('--output',
+                        help='Output directory to store cached data.')
+    args = parser.parse_args()
+
+    # Prepare output folder
+    if os.path.exists(args.output) and not os.path.isdir(args.output):
+        print('{} is not a directory.'.format(args.output))
+        sys.exit(1)
+    elif os.path.exists(args.output) and len(os.listdir(args.output)):
+        print('{} is not empty.'.format(args.output))
+        sys.exit(1)
+    elif not os.path.exists(args.output):
+        os.makedirs(args.output)
+
+    # Load data
+    with print_time('load data'):
+        if args.data.lower() == 'text8':
+            data, vocab, idx_to_counts = text8(
+                max_vocab_size=args.max_vocab_size)
+        elif args.data.lower() == 'wiki':
+            data, vocab, idx_to_counts = wiki(args.wiki_root, args.wiki_date,
+                                              args.wiki_language,
+                                              args.max_vocab_size)
+        else:
+            print(args.data, 'is unsupported.')
+            sys.exit(1)
+
+    # Store metadata
+    with print_time('write vocab and counts'):
+        with io.open(os.path.join(args.output, 'vocab.json'), 'w') as f:
+            f.write(vocab.to_json())
+        with io.open(os.path.join(args.output, 'counts.json'), 'w') as f:
+            json.dump(idx_to_counts, f)
+
+    vocab_dtype = np.min_scalar_type(len(vocab))
+    i = 0
+    data_iter = iter(data)
+    while True:
+        i += 1
+        with print_time('process shard {}'.format(i)):
+            try:
+                shard = next(data_iter)
+            except StopIteration:
+                break
+            np_sentences = np.concatenate(shard).astype(vocab_dtype)
+            np_ptr = np.cumsum([len(sentence) for sentence in shard])
+            np.savez(
+                os.path.join(args.output, str(i)), sentences=np_sentences,
+                ptr=np_ptr)
