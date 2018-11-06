@@ -2,9 +2,16 @@
 import io
 import os
 import re
-import shutil
-import sys
-from setuptools import setup, find_packages
+from setuptools import setup, find_packages, Extension
+
+try:
+    from Cython.Build import cythonize
+    extensions = [
+        Extension("scripts.word_embeddings.data_internal",
+                  ["scripts/word_embeddings/data_internal.pyx"]), ]
+    ext_modules = cythonize(extensions)
+except ImportError:
+    ext_modules = []  # cython support is optional
 
 
 def read(*names, **kwargs):
@@ -44,6 +51,7 @@ setup(
     license='Apache-2.0',
 
     # Package info
+    ext_modules=ext_modules,
     packages=find_packages(exclude=(
         'tests',
         'scripts',
