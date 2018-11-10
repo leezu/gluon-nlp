@@ -30,6 +30,7 @@ import functools
 import io
 import itertools
 import json
+import logging
 import math
 import os
 import warnings
@@ -42,6 +43,7 @@ from gluonnlp import Vocab
 from gluonnlp.base import numba_njit
 from gluonnlp.data import CorpusDataset, SimpleDatasetStream
 from utils import print_time
+import sentencepiecewrap
 
 
 def preprocess_dataset(data, min_freq=5, max_vocab_size=None):
@@ -317,6 +319,114 @@ def transform_data_word2vec(data, vocab, idx_to_counts, cbow, batch_size,
                                     dtype=dtype, index_dtype=index_dtype)
 
     return data, batchify_fn,
+
+
+def transform_data_sentencepiece(
+        data, vocab, sentencepiece_path, sentencepiece_num_best,
+        sentencepiece_alpha, idx_to_counts, cbow, batch_size, window_size,
+        multiprocessing=True, frequent_token_subsampling=1E-4, dtype='float32',
+        index_dtype='int64'):
+    """Transform a DataStream of coded DataSets to a DataStream of batches.
+
+    Parameters
+    ----------
+    data : gluonnlp.data.DataStream
+        DataStream where each sample is a valid input to
+        gluonnlp.data.EmbeddingCenterContextBatchify.
+    vocab
+    sentencepiece_path
+    sentencepiece_num_best
+    sentencepiece_alpha
+    idx_to_counts : list of int
+        List of integers such that idx_to_counts[idx] represents the count of
+        vocab.idx_to_token[idx] in the underlying dataset. The count
+        information is used to subsample frequent words in the dataset.
+        Each token is independently dropped with probability 1 - sqrt(t /
+        (count / sum_counts)) where t is the hyperparameter
+        frequent_token_subsampling.
+    batch_size : int
+        The returned data stream iterates over batches of batch_size.
+    window_size : int
+        The context window size for
+        gluonnlp.data.EmbeddingCenterContextBatchify.
+    frequent_token_subsampling : float
+        Hyperparameter for subsampling. See idx_to_counts above for more
+        information.
+    dtype : str or np.dtype, default 'float32'
+        Data type of data array.
+    index_dtype : str or np.dtype, default 'int64'
+        Data type of index arrays.
+
+    Returns
+    -------
+    gluonnlp.data.DataStream
+        Stream over batches.
+    """
+    sum_counts = float(sum(idx_to_counts))
+    idx_to_pdiscard = [
+        1 - math.sqrt(frequent_token_subsampling / (count / sum_counts))
+        if count > 0 else 0 for count in idx_to_counts]
+
+    def subsample(shard):
+        return [[
+            t for t, r in zip(sentence,
+                              np.random.uniform(0, 1, size=len(sentence)))
+            if r > idx_to_pdiscard[t]] for sentence in shard]
+
+    data = data.transform(subsample)
+
+    # if multiprocessing:
+    #     data = nlp.data.PrefetchingStream(data, num_prefetch=5,
+    #                                       worker_type='process')
+
+    batchify = nlp.data.batchify.EmbeddingCenterContextBatchify(
+        batch_size=batch_size, window_size=window_size, cbow=cbow,
+        weight_dtype=dtype, index_dtype=index_dtype)
+    data = data.transform(batchify)
+    data = UnchainStream(data)
+
+    if cbow:
+        batchify_fn = cbow_sentencepiece_batch
+    else:
+        batchify_fn = skipgram_sentencepiece_batch
+
+    subword_lookup = sentencepiecewrap.SentencePieceWrap(sentencepiece_path)
+    subword_lookup.set_tokens(vocab.idx_to_token)
+    batchify_fn = functools.partial(
+        batchify_fn, vocab=vocab, dtype=dtype, subword_lookup=subword_lookup,
+        sentencepiece_num_best=sentencepiece_num_best,
+        sentencepiece_alpha=sentencepiece_alpha, index_dtype=index_dtype)
+
+    return data, batchify_fn
+
+
+def cbow_sentencepiece_batch(centers, contexts, vocab, subword_lookup,
+                             sentencepiece_num_best, sentencepiece_alpha,
+                             dtype, index_dtype):
+    """Create a batch for CBOW training objective with subwords."""
+    raise NotImplementedError
+    _, contexts_row, contexts_col = contexts
+    data, row, col = subword_lookup(contexts_row, contexts_col)
+    centers = mx.nd.array(centers, dtype=index_dtype)
+    contexts = mx.nd.sparse.csr_matrix(
+        (data, (row, col)), dtype=dtype,
+        shape=(len(centers), num_tokens))  # yapf: disable
+    return centers, contexts
+
+
+def skipgram_sentencepiece_batch(centers, contexts, subword_lookup,
+                                 sentencepiece_num_best, sentencepiece_alpha,
+                                 vocab, dtype, index_dtype):
+    """Create a batch for SG training objective with subwords."""
+    contexts = mx.nd.array(contexts[2], dtype=index_dtype)
+
+    data, row, col = subword_lookup.sample_skipgram(
+        centers, sentencepiece_num_best, sentencepiece_alpha, len(vocab))
+    centers_csr = mx.nd.sparse.csr_matrix(
+        (data, (row, col)), dtype=dtype,
+        shape=(len(centers), len(vocab) + len(subword_lookup)))
+    centers = mx.nd.array(centers, dtype=index_dtype)
+    return centers_csr, contexts, centers
 
 
 def cbow_fasttext_batch(centers, contexts, num_tokens, subword_lookup, dtype,

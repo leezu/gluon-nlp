@@ -8,3 +8,9 @@
 [submodule "scripts/word_embeddings/tools/extern/sparsepp"]
 	path = scripts/word_embeddings/tools/extern/sparsepp
 	url = https://github.com/greg7mdp/sparsepp.git
+[submodule "scripts/word_embeddings/third_party/pybind11"]
+	path = scripts/word_embeddings/third_party/pybind11
+	url = https://github.com/pybind/pybind11/
+[submodule "scripts/word_embeddings/third_party/sentencepiece"]
+	path = scripts/word_embeddings/third_party/sentencepiece
+	url = https://github.com/google/sentencepiece/
