@@ -56,35 +56,17 @@ class Net(mx.gluon.HybridBlock):
     """
 
     # pylint: disable=abstract-method
-    def __init__(self, token_to_idx, output_dim, batch_size, negatives_weights,
-                 subword_function=None, num_negatives=5, smoothing=0.75,
-                 sparse_grad=True, dtype='float32', **kwargs):
+    def __init__(self, embedding, embedding_out, output_dim, batch_size,
+                 negatives_weights, num_negatives=5, smoothing=0.75,
+                 dtype='float32', **kwargs):
         super(Net, self).__init__(**kwargs)
 
-        self._kwargs = dict(
-            input_dim=len(token_to_idx), output_dim=output_dim, dtype=dtype,
-            sparse_grad=sparse_grad, num_negatives=num_negatives)
+        self._kwargs = dict(output_dim=output_dim, dtype=dtype,
+                            num_negatives=num_negatives)
 
         with self.name_scope():
-            if subword_function is not None:
-                self.embedding = nlp.model.train.FasttextEmbeddingModel(
-                    token_to_idx=token_to_idx,
-                    subword_function=subword_function,
-                    output_dim=output_dim,
-                    weight_initializer=mx.init.Uniform(scale=1 / output_dim),
-                    sparse_grad=sparse_grad,
-                )
-            else:
-                self.embedding = nlp.model.train.CSREmbeddingModel(
-                    token_to_idx=token_to_idx,
-                    output_dim=output_dim,
-                    weight_initializer=mx.init.Uniform(scale=1 / output_dim),
-                    sparse_grad=sparse_grad,
-                )
-            self.embedding_out = mx.gluon.nn.Embedding(
-                len(token_to_idx), output_dim=output_dim,
-                weight_initializer=mx.init.Zero(), sparse_grad=sparse_grad,
-                dtype=dtype)
+            self.embedding = embedding
+            self.embedding_out = embedding_out
 
             self.negatives_sampler = nlp.data.UnigramCandidateSampler(
                 weights=negatives_weights**smoothing, shape=(batch_size, ),
