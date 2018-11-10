@@ -67,8 +67,7 @@ class _LargeTextCompressionBenchmark(CorpusDataset):
         if not os.path.exists(path) or not check_sha1(path, data_hash):
             downloaded_file_path = download(
                 _get_repo_file_url(self._namespace, archive_file_name),
-                path=root,
-                sha1_hash=archive_hash)
+                path=root, sha1_hash=archive_hash)
 
             with zipfile.ZipFile(downloaded_file_path, 'r') as zf:
                 zf.extractall(root)
@@ -99,15 +98,13 @@ class Text8(_LargeTextCompressionBenchmark):
         'train': ('text8', '0dc3edebc970dcc96137e7deda4d9995af9d93de')
     }
 
-    def __init__(self,
-                 root=os.path.join(_get_home_dir(), 'datasets', 'text8'),
-                 segment='train',
-                 max_sentence_length=10000):
+    def __init__(self, root=os.path.join(_get_home_dir(), 'datasets', 'text8'),
+                 segment='train', max_sentence_length=10000, **kwargs):
         root = os.path.expanduser(root)
         if not os.path.isdir(root):
             os.makedirs(root)
         self._max_sentence_length = max_sentence_length
-        super(Text8, self).__init__(root=root, segment=segment)
+        super(Text8, self).__init__(root=root, segment=segment, **kwargs)
 
         # pylint: disable=access-member-before-definition
         if max_sentence_length:
@@ -141,15 +138,13 @@ class Fil9(_LargeTextCompressionBenchmark):
                     'e2a6a602be8d3f9712c92423581aa47e7ffd5906')
     data_file = {'train': ('fil9', '08caf9b1d5600233aa19cb6b25d7b798558304d3')}
 
-    def __init__(self,
-                 root=os.path.join(_get_home_dir(), 'datasets', 'fil9'),
-                 segment='train',
-                 max_sentence_length=None):
+    def __init__(self, root=os.path.join(_get_home_dir(), 'datasets', 'fil9'),
+                 segment='train', max_sentence_length=None, **kwargs):
         root = os.path.expanduser(root)
         if not os.path.isdir(root):
             os.makedirs(root)
         self._max_sentence_length = max_sentence_length
-        super(Fil9, self).__init__(root=root, segment=segment)
+        super(Fil9, self).__init__(root=root, segment=segment, **kwargs)
 
         # pylint: disable=access-member-before-definition
         if max_sentence_length is not None:

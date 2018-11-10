@@ -45,7 +45,8 @@ import gluonnlp as nlp
 import evaluation
 from utils import get_context, print_time
 from model import SG, CBOW
-from data import transform_data_word2vec, transform_data_fasttext, text8, wiki
+from data import (transform_data_word2vec, transform_data_fasttext,
+                  transform_data_sentencepiece, text8, wiki)
 
 
 def parse_args():
@@ -63,6 +64,11 @@ def parse_args():
     group.add_argument('--wiki-language', type=str, default='text8',
                        help='Language of wiki dump.')
     group.add_argument('--wiki-date', help='Date of wiki dump.')
+    group.add_argument('--sentencepiece-model', type=str, default=None)
+    group.add_argument('--sentencepiece-nbest', type=int, default=-1)
+    group.add_argument('--sentencepiece-alpha', type=float,
+                       default=0.5)  # TODO likely increase
+    group.add_argument('--sentencepiece-counts', type=str)
 
     # Computation options
     group = parser.add_argument_group('Computation arguments')
@@ -140,31 +146,89 @@ def train(args):
         sys.exit(1)
 
     if args.data.lower() == 'text8':
-        data, vocab, idx_to_counts = text8(max_vocab_size=args.max_vocab_size)
+        if args.sentencepiece_model:
+            import functools
+            tokenizer = nlp.data.transforms.SentencepieceTokenizer(
+                args.sentencepiece_model, 1, 1)
+            sp_tokens = tokenizer.tokens
+            tokenizer = functools.partial(
+                tokenizer._processor.SampleEncodeAsIds,
+                nbest_size=tokenizer._nbest, alpha=tokenizer._alpha)
+            with print_time('read data'):
+                data = nlp.data.Text8(
+                    segment='train',
+                    # Number of characters
+                    max_sentence_length=100000,
+                    tokenizer=None)
+                counter = nlp.data.count_tokens(sp_tokens)
+                vocab = nlp.Vocab(counter, unknown_token=None,
+                                  padding_token=None, bos_token=None,
+                                  eos_token=None, min_freq=1)
+                assert len(vocab) == len(sp_tokens)
+                vocab._idx_to_token = sp_tokens
+                vocab._token_to_idx = {t: i for i, t in enumerate(sp_tokens)}
+            if not args.sentencepiece_counts:
+                with print_time('count'):
+                    tokenized = np.array(sum(map(tokenizer, data), []))
+                    tok, count = np.unique(tokenized, return_counts=True)
+                    np.savez("counts", tok=tok, count=count)
+            else:
+                tok_count = np.load(args.sentencepiece_counts)
+                tok, count = tok_count['tok'], tok_count['count']
+            counter = {t: c for t, c in zip(tok, count)}
+            idx_to_counts = [
+                counter[t] if t in counter else 0
+                for t in range(len(sp_tokens))]
+            data = nlp.data.SimpleDataStream([data])
+        else:
+            data, vocab, idx_to_counts = text8(
+                max_vocab_size=args.max_vocab_size)
     elif args.data.lower() == 'wiki':
+        assert not args.sentencepiece_model
         data, vocab, idx_to_counts = wiki(args.wiki_root, args.wiki_date,
                                           args.wiki_language,
                                           args.max_vocab_size)
 
-    if args.ngram_buckets > 0:
+    if args.ngram_buckets > 0 and not args.sentencepiece_model:
         data, batchify_fn, subword_function = transform_data_fasttext(
             data, vocab, idx_to_counts,
             args.model.lower() == 'cbow', args.ngram_buckets, args.ngrams,
             args.batch_size, args.window, args.frequent_token_subsampling)
+        embedding = nlp.model.train.FasttextEmbeddingModel(
+            token_to_idx=vocab.token_to_idx, subword_function=subword_function,
+            output_dim=args.emsize,
+            weight_initializer=mx.init.Uniform(scale=1 / args.emsize))
+    elif args.sentencepiece_model:
+        assert args.ngram_buckets == 0
+        subword_function = None
+        data, batchify_fn = transform_data_sentencepiece(
+            data, args.sentencepiece_model, args.sentencepiece_nbest,
+            args.sentencepiece_alpha, idx_to_counts,
+            args.model.lower() == 'cbow', args.batch_size, args.window,
+            args.frequent_token_subsampling)
+        embedding = nlp.model.train.CSREmbeddingModel(
+            token_to_idx=vocab.token_to_idx, output_dim=args.emsize,
+            backoff=tokenizer,
+            weight_initializer=mx.init.Uniform(scale=1 / args.emsize))
     else:
         subword_function = None
         data, batchify_fn = transform_data_word2vec(
             data, vocab, idx_to_counts,
-            args.model.lower() == 'cbow', args.ngram_buckets, args.ngrams,
-            args.batch_size, args.window, args.frequent_token_subsampling)
+            args.model.lower() == 'cbow', args.batch_size, args.window,
+            args.frequent_token_subsampling)
+        embedding = nlp.model.train.CSREmbeddingModel(
+            token_to_idx=vocab.token_to_idx, output_dim=args.emsize,
+            weight_initializer=mx.init.Uniform(scale=1 / args.emsize))
+
+    embedding_out = mx.gluon.nn.Embedding(
+        len(vocab), output_dim=args.emsize, weight_initializer=mx.init.Zero())
 
     num_tokens = float(sum(idx_to_counts))
 
     model = CBOW if args.model.lower() == 'cbow' else SG
-    embedding = model(token_to_idx=vocab.token_to_idx, output_dim=args.emsize,
+    embedding = model(embedding, embedding_out, output_dim=args.emsize,
                       batch_size=args.batch_size, num_negatives=args.negative,
-                      negatives_weights=mx.nd.array(idx_to_counts),
-                      subword_function=subword_function)
+                      negatives_weights=mx.nd.array(idx_to_counts))
     context = get_context(args)
     embedding.initialize(ctx=context)
     if not args.no_hybridize:
@@ -260,7 +324,7 @@ def evaluate(args, embedding, vocab, global_step, eval_analogy=False):
         if not args.no_eval_analogy:
             eval_tokens_set.update(vocab.idx_to_token)
 
-        if not args.ngram_buckets:
+        if not args.ngram_buckets and not args.sentencepiece_model:
             # Word2Vec does not support computing vectors for OOV words
             eval_tokens_set = filter(lambda t: t in vocab, eval_tokens_set)
 

@@ -94,6 +94,11 @@ class CSREmbeddingModel(EmbeddingModel, HybridBlock):
         subword embedding matrix.
     output_dim : int
         Dimension of the dense embedding.
+    backoff : callable
+        Backoff functionality. When looking up a string via __getitem__ that is
+        not in token_to_idx, backoff will be called with the string and must
+        return a list of idx whose embeddings will be averaged and taken as the
+        embedding for the unknown string.
     weight_initializer : mxnet.initializer.Initializer, optional
         Initializer for the embeddings matrix.
     sparse_grad : bool, default True
@@ -103,11 +108,13 @@ class CSREmbeddingModel(EmbeddingModel, HybridBlock):
 
     """
 
-    def __init__(self, token_to_idx, output_dim, weight_initializer=None,
-                 sparse_grad=True, dtype='float32', **kwargs):
+    def __init__(self, token_to_idx, output_dim, backoff=None,
+                 weight_initializer=None, sparse_grad=True, dtype='float32',
+                 **kwargs):
         super(CSREmbeddingModel, self).__init__(**kwargs)
         assert isinstance(token_to_idx, dict)
         self._token_to_idx = token_to_idx
+        self._backoff = backoff
         self._kwargs = {
             'input_dim': len(token_to_idx), 'output_dim': output_dim,
             'dtype': dtype, 'sparse_grad': sparse_grad}
@@ -135,7 +142,12 @@ class CSREmbeddingModel(EmbeddingModel, HybridBlock):
         return s.format(block_name=self.__class__.__name__, **self._kwargs)
 
     def __contains__(self, token):
-        return token in self.idx_to_token
+        if token in self.idx_to_token:
+            return True
+        elif self._backoff is not None:
+            return len(self._backoff(token)) > 0
+        else:
+            return False
 
     def __getitem__(self, tokens):
         """Looks up embedding vectors of text tokens.
@@ -158,10 +170,16 @@ class CSREmbeddingModel(EmbeddingModel, HybridBlock):
             tokens = [tokens]
             squeeze = True
 
-        row = np.arange(len(tokens))
-        col = np.array([self._token_to_idx[t] for t in tokens])
+        idxs = [[self._token_to_idx[t]]
+                if t in self._token_to_idx else self._backoff(t)
+                for t in tokens]
+
+        data = np.concatenate(
+            [[1 / len(idxs[i])] * len(idxs[i]) for i in range(len(tokens))])
+        row = np.concatenate([[i] * len(idxs[i]) for i in range(len(tokens))])
+        col = np.concatenate(idxs)
         x = nd.sparse.csr_matrix(
-            (np.ones(len(row)), (row, col)),
+            (data, (row, col)),
             dtype=self._kwargs['dtype'],
             ctx=self.weight.list_ctx()[0],
             shape=(len(tokens), self.weight.shape[0]),
