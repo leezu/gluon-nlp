@@ -342,7 +342,8 @@ class SentencePieceStream(nlp.data.DataStream):
 def transform_data_sentencepiece(
         data, sentencepiece_path, sentencepiece_num_best, sentencepiece_alpha,
         idx_to_counts, cbow, batch_size, window_size,
-        frequent_token_subsampling=1E-4, dtype='float32', index_dtype='int64'):
+        multiprocessing_tokenization=True, frequent_token_subsampling=1E-4,
+        dtype='float32', index_dtype='int64'):
     """Transform a DataStream of coded DataSets to a DataStream of batches.
 
     Parameters
@@ -377,6 +378,9 @@ def transform_data_sentencepiece(
     """
     data = SentencePieceStream(data, sentencepiece_path,
                                sentencepiece_num_best, sentencepiece_alpha)
+    if multiprocessing_tokenization:
+        data = nlp.data.PrefetchingStream(data, num_prefetch=5,
+                                          worker_type='process')
 
     if idx_to_counts is not None:
         sum_counts = float(sum(idx_to_counts))
