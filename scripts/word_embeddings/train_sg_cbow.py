@@ -70,6 +70,7 @@ def parse_args():
     group.add_argument('--sentencepiece-alpha', type=float,
                        default=0.5)  # TODO likely increase
     group.add_argument('--sentencepiece-counts', type=str)
+    group.add_argument('--load', type=str)
 
     # Computation options
     group = parser.add_argument_group('Computation arguments')
@@ -236,6 +237,9 @@ def train(args):
     embedding.initialize(ctx=context)
     if not args.no_hybridize:
         embedding.hybridize(static_alloc=True, static_shape=True)
+
+    if args.load:
+        embedding.load_parameters(args.load)
 
     optimizer_kwargs = dict(learning_rate=args.lr)
     trainer = mx.gluon.Trainer(embedding.collect_params(), args.optimizer,
