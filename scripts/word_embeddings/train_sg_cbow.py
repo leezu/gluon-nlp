@@ -334,8 +334,18 @@ def evaluate(args, embedding, vocab, global_step, eval_analogy=False):
         global eval_tokens
 
         eval_tokens_set = evaluation.get_tokens_in_evaluation_datasets(args)
-        if not args.no_eval_analogy:
-            eval_tokens_set.update(vocab.idx_to_token)
+
+        # For sentencepiece, must adapt the vocab based
+        if args.sentencepiece_model:
+            assert args.data.lower() == 'text8'
+            text8 = nlp.data.Text8()
+            import itertools
+            counter = nlp.data.count_tokens(itertools.chain.from_iterable(text8))
+            if not args.no_eval_analogy:
+                eval_tokens_set.update(t for t in counter if counter[t] > 5)
+        else:
+            if not args.no_eval_analogy:
+                eval_tokens_set.update(vocab.idx_to_token)
 
         if not args.ngram_buckets and not args.sentencepiece_model:
             # Word2Vec does not support computing vectors for OOV words
