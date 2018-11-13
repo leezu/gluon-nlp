@@ -20,7 +20,9 @@
 # pylint: disable=abstract-method
 """Trainable embedding models."""
 
-__all__ = ['EmbeddingModel', 'CSREmbeddingModel', 'FasttextEmbeddingModel']
+__all__ = [
+    'EmbeddingModel', 'CSREmbeddingModel', 'FasttextEmbeddingModel',
+    'SentencePieceEmbeddingModel']
 
 import logging
 import struct
@@ -171,6 +173,67 @@ class CSREmbeddingModel(EmbeddingModel, HybridBlock):
             squeeze = True
 
         idxs = [[self._token_to_idx[t]]
+                if t in self._token_to_idx else self._backoff(t)
+                for t in tokens]
+
+        data = np.concatenate(
+            [[1 / len(idxs[i])] * len(idxs[i]) for i in range(len(tokens))])
+        row = np.concatenate([[i] * len(idxs[i]) for i in range(len(tokens))])
+        col = np.concatenate(idxs)
+        x = nd.sparse.csr_matrix(
+            (data, (row, col)),
+            dtype=self._kwargs['dtype'],
+            ctx=self.weight.list_ctx()[0],
+            shape=(len(tokens), self.weight.shape[0]),
+        )
+        vecs = self(x)
+
+        if squeeze:
+            assert len(vecs) == 1
+            return vecs[0].squeeze()
+        else:
+            return vecs
+
+
+class SentencePieceEmbeddingModel(CSREmbeddingModel):
+    def __init__(self, token_to_idx, input_dim, output_dim, backoff=None,
+                 weight_initializer=None, sparse_grad=True, dtype='float32',
+                 **kwargs):
+        super(CSREmbeddingModel, self).__init__(**kwargs)  # TODO inheritance hack
+        assert isinstance(token_to_idx, dict)
+        self._token_to_idx = token_to_idx
+        self._backoff = backoff
+        self._kwargs = {
+            'input_dim': len(token_to_idx), 'output_dim': output_dim,
+            'dtype': dtype, 'sparse_grad': sparse_grad}
+        grad_stype = 'row_sparse' if sparse_grad else 'default'
+        self.weight = self.params.get(
+            'weight', shape=(input_dim, output_dim),
+            init=weight_initializer, dtype=dtype,
+            allow_deferred_init=True, grad_stype=grad_stype)  # yapf: disable
+
+    def __getitem__(self, tokens):
+        """Looks up embedding vectors of text tokens.
+
+        Parameters
+        ----------
+        tokens : str or list of strs
+            A token or a list of tokens.
+
+        Returns
+        -------
+        mxnet.ndarray.NDArray:
+            The embedding vector(s) of the token(s). According to numpy
+            conventions, if `tokens` is a string, returns a 1-D NDArray
+            (vector); if `tokens` is a list of strings, returns a 2-D NDArray
+            (matrix) of shape=(len(tokens), vec_len).
+        """
+        squeeze = False
+        if isinstance(tokens, _str_types):
+            tokens = [tokens]
+            squeeze = True
+
+        idxs = [[self._token_to_idx[t]] + self._backoff(t)
                 if t in self._token_to_idx else self._backoff(t)
                 for t in tokens]
 

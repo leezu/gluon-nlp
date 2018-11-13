@@ -319,31 +319,11 @@ def transform_data_word2vec(data, vocab, idx_to_counts, cbow, batch_size,
     return data, batchify_fn,
 
 
-class SentencePieceStream(nlp.data.DataStream):
-    def __init__(self, stream, path, num_best=0, alpha=1.0):
-        super(SentencePieceStream, self).__init__()
-        self._stream = stream
-        self._path = path
-        self._nbest = num_best
-        self._alpha = alpha
-
-    def __iter__(self):
-        tokenizer = nlp.data.SentencepieceTokenizer(self._path, self._nbest,
-                                                    self._alpha)
-        tokenizer = functools.partial(tokenizer._processor.SampleEncodeAsIds,
-                                      nbest_size=tokenizer._nbest,
-                                      alpha=tokenizer._alpha)
-        for shard in self._stream:
-            with print_time('tokenize shard'):
-                tokenized = [tokenizer(s) for s in shard]
-            yield mx.gluon.data.SimpleDataset(tokenized)
-
-
 def transform_data_sentencepiece(
-        data, sentencepiece_path, sentencepiece_num_best, sentencepiece_alpha,
-        idx_to_counts, cbow, batch_size, window_size,
-        multiprocessing_tokenization=True, frequent_token_subsampling=1E-4,
-        dtype='float32', index_dtype='int64'):
+        data, vocab, sentencepiece_path, sentencepiece_num_best,
+        sentencepiece_alpha, idx_to_counts, cbow, batch_size, window_size,
+        multiprocessing=True, frequent_token_subsampling=1E-4, dtype='float32',
+        index_dtype='int64'):
     """Transform a DataStream of coded DataSets to a DataStream of batches.
 
     Parameters
@@ -351,6 +331,10 @@ def transform_data_sentencepiece(
     data : gluonnlp.data.DataStream
         DataStream where each sample is a valid input to
         gluonnlp.data.EmbeddingCenterContextBatchify.
+    vocab
+    sentencepiece_path
+    sentencepiece_num_best
+    sentencepiece_alpha
     idx_to_counts : list of int
         List of integers such that idx_to_counts[idx] represents the count of
         vocab.idx_to_token[idx] in the underlying dataset. The count
@@ -376,27 +360,30 @@ def transform_data_sentencepiece(
     gluonnlp.data.DataStream
         Stream over batches.
     """
-    data = SentencePieceStream(data, sentencepiece_path,
-                               sentencepiece_num_best, sentencepiece_alpha)
-    if multiprocessing_tokenization:
-        data = nlp.data.PrefetchingStream(data, num_prefetch=5,
-                                          worker_type='process')
 
-    if idx_to_counts is not None:
-        sum_counts = float(sum(idx_to_counts))
-        idx_to_pdiscard = [
-            1 - math.sqrt(frequent_token_subsampling / (count / sum_counts))
-            if count > 0 else 0 for count in idx_to_counts]
+    def code(shard):
+        with print_time('tokenize shard'):
+            return [[vocab[token] for token in sentence if token in vocab]
+                    for sentence in shard]
 
-        def subsample(shard):
-            return [[
-                t for t, r in zip(sentence,
-                                  np.random.uniform(0, 1, size=len(sentence)))
-                if r > idx_to_pdiscard[t]] for sentence in shard]
+    data = data.transform(code)
 
-        data = data.transform(subsample)
-    else:
-        logging.warning('Skipping subsampling!')
+    sum_counts = float(sum(idx_to_counts))
+    idx_to_pdiscard = [
+        1 - math.sqrt(frequent_token_subsampling / (count / sum_counts))
+        if count > 0 else 0 for count in idx_to_counts]
+
+    def subsample(shard):
+        return [[
+            t for t, r in zip(sentence,
+                              np.random.uniform(0, 1, size=len(sentence)))
+            if r > idx_to_pdiscard[t]] for sentence in shard]
+
+    data = data.transform(subsample)
+
+    # if multiprocessing:
+    #     data = nlp.data.PrefetchingStream(data, num_prefetch=5,
+    #                                       worker_type='process')
 
     batchify = nlp.data.batchify.EmbeddingCenterContextBatchify(
         batch_size=batch_size, window_size=window_size, cbow=cbow,
@@ -405,15 +392,56 @@ def transform_data_sentencepiece(
     data = UnchainStream(data)
 
     if cbow:
-        batchify_fn = cbow_batch
+        batchify_fn = cbow_sentencepiece_batch
     else:
-        batchify_fn = skipgram_batch
+        batchify_fn = skipgram_sentencepiece_batch
     tokenizer = nlp.data.SentencepieceTokenizer(
         sentencepiece_path, sentencepiece_num_best, sentencepiece_alpha)
-    batchify_fn = functools.partial(batchify_fn, num_tokens=len(tokenizer),
-                                    dtype=dtype, index_dtype=index_dtype)
+    batchify_fn = functools.partial(batchify_fn, vocab=vocab,
+                                    tokenizer=tokenizer, dtype=dtype,
+                                    index_dtype=index_dtype)
 
-    return data, batchify_fn,
+    return data, batchify_fn
+
+
+def cbow_sentencepiece_batch(centers, contexts, vocab, tokenizer, dtype,
+                             index_dtype):
+    """Create a batch for CBOW training objective with subwords."""
+    raise NotImplementedError
+    _, contexts_row, contexts_col = contexts
+    data, row, col = subword_lookup(contexts_row, contexts_col)
+    centers = mx.nd.array(centers, dtype=index_dtype)
+    contexts = mx.nd.sparse.csr_matrix(
+        (data, (row, col)), dtype=dtype,
+        shape=(len(centers), num_tokens))  # yapf: disable
+    return centers, contexts
+
+
+def skipgram_sentencepiece_batch(centers, contexts, vocab, tokenizer, dtype,
+                                 index_dtype):
+    """Create a batch for SG training objective with subwords."""
+    contexts = mx.nd.array(contexts[2], dtype=index_dtype)
+
+    tokens = [vocab.idx_to_token[idx] for idx in centers.tolist()]
+    subwords = [
+        tokenizer._processor.SampleEncodeAsIds(t, tokenizer._nbest,
+                                               tokenizer._alpha)
+        for t in tokens]
+
+    data = [[1 / (len(s) + 1)] * (len(s) + 1) for i, s in enumerate(subwords)]
+    row = [[i] * (len(s) + 1) for i, s in enumerate(subwords)]
+    col = [[idx] + [s_idx + len(vocab) for s_idx in s]
+           for idx, s in zip(centers, subwords)]
+
+    data = np.concatenate(data)
+    row = np.concatenate(row)
+    col = np.concatenate(col)
+
+    centers_csr = mx.nd.sparse.csr_matrix(
+        (data, (row, col)), dtype=dtype,
+        shape=(len(centers), len(vocab) + len(tokenizer)))  # yapf: disable
+    centers = mx.nd.array(centers, dtype=index_dtype)
+    return centers_csr, contexts, centers
 
 
 def cbow_fasttext_batch(centers, contexts, num_tokens, subword_lookup, dtype,
