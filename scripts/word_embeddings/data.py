@@ -319,6 +319,16 @@ def transform_data_word2vec(data, vocab, idx_to_counts, cbow, batch_size,
     return data, batchify_fn,
 
 
+tokenizer = None
+
+
+def setup_tokenizer(sentencepiece_path, sentencepiece_num_best,
+                    sentencepiece_alpha):
+    global tokenizer
+    tokenizer = nlp.data.SentencepieceTokenizer(
+        sentencepiece_path, sentencepiece_num_best, sentencepiece_alpha)
+
+
 def transform_data_sentencepiece(
         data, vocab, sentencepiece_path, sentencepiece_num_best,
         sentencepiece_alpha, idx_to_counts, cbow, batch_size, window_size,
@@ -395,10 +405,7 @@ def transform_data_sentencepiece(
         batchify_fn = cbow_sentencepiece_batch
     else:
         batchify_fn = skipgram_sentencepiece_batch
-    tokenizer = nlp.data.SentencepieceTokenizer(
-        sentencepiece_path, sentencepiece_num_best, sentencepiece_alpha)
-    batchify_fn = functools.partial(batchify_fn, vocab=vocab,
-                                    tokenizer=tokenizer, dtype=dtype,
+    batchify_fn = functools.partial(batchify_fn, vocab=vocab, dtype=dtype,
                                     index_dtype=index_dtype)
 
     return data, batchify_fn
@@ -417,9 +424,10 @@ def cbow_sentencepiece_batch(centers, contexts, vocab, tokenizer, dtype,
     return centers, contexts
 
 
-def skipgram_sentencepiece_batch(centers, contexts, vocab, tokenizer, dtype,
-                                 index_dtype):
+def skipgram_sentencepiece_batch(centers, contexts, *, vocab, dtype, index_dtype):
     """Create a batch for SG training objective with subwords."""
+    # centers, contexts = centers_contexts  # TODO
+    global tokenizer
     contexts = mx.nd.array(contexts[2], dtype=index_dtype)
 
     tokens = [vocab.idx_to_token[idx] for idx in centers.tolist()]

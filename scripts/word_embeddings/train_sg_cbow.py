@@ -33,6 +33,7 @@ information. TACL 2017"
 """
 import argparse
 import logging
+import multiprocessing as mp
 import os
 import random
 import sys
@@ -217,18 +218,28 @@ def train(args):
     trainer = mx.gluon.Trainer(embedding.collect_params(), args.optimizer,
                                optimizer_kwargs)
 
+    from data import setup_tokenizer
+    setup_tokenizer = functools.partial(
+        setup_tokenizer, sentencepiece_path=args.sentencepiece_model,
+        sentencepiece_num_best=args.sentencepiece_nbest,
+        sentencepiece_alpha=args.sentencepiece_alpha)
     try:
         if args.no_prefetch_batch:
+            setup_tokenizer()
             data = data.transform(batchify_fn)
         else:
             from executors import LazyThreadPoolExecutor
+            from executors import LazyProcessPoolExecutor
             num_cpu = len(os.sched_getaffinity(0))
-            ex = LazyThreadPoolExecutor(num_cpu)
+            # ex = LazyThreadPoolExecutor(num_cpu)
+            ex = LazyProcessPoolExecutor(num_cpu, mp_context=forkserver_ctx,
+                                         initializer=setup_tokenizer)
     except (ImportError, SyntaxError, AttributeError):
         # Py2 - no async prefetching is supported
         logging.warning(
             'Asynchronous batch prefetching is not supported on Python 2. '
             'Consider upgrading to Python 3 for improved performance.')
+        setup_tokenizer()
         data = data.transform(batchify_fn)
 
     num_update = 0
@@ -339,6 +350,7 @@ def evaluate(args, embedding, vocab, global_step, eval_analogy=False):
 
 
 if __name__ == '__main__':
+    forkserver_ctx = ctx = mp.get_context('forkserver')
     logging.basicConfig()
     logging.getLogger().setLevel(logging.INFO)
     args_ = parse_args()

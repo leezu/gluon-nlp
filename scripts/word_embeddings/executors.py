@@ -11,17 +11,20 @@ load all data to memory but need to iterate lazily.
 import collections
 import itertools
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import (Executor, ThreadPoolExecutor,
+                                ProcessPoolExecutor)
+from concurrent.futures.process import _process_chunk, _get_chunks
+from functools import partial
 
 
-class LazyThreadPoolExecutor(ThreadPoolExecutor):
+class LazyExecutor(Executor):
     """ThreadPoolExecutor with lazy iterable collection in map().
 
     Implmentation taken from https://github.com/python/cpython/pull/707
 
     """
 
-    def map(self, fn, *iterables, timeout=None, prefetch=None):
+    def map(self, fn, *iterables, timeout=None, chunksize=1, prefetch=None):
         # pylint: disable=arguments-differ
         """Lazy apdaption of ThreadPoolExecutor.map.
 
@@ -74,3 +77,48 @@ class LazyThreadPoolExecutor(ThreadPoolExecutor):
                     future.cancel()
 
         return _result_iterator()
+
+
+class LazyThreadPoolExecutor(LazyExecutor, ThreadPoolExecutor):
+    """ThreadPoolExecutor with lazy iterable collection in map().
+
+    Implmentation taken from https://github.com/python/cpython/pull/707
+
+    """
+
+    pass
+
+
+class LazyProcessPoolExecutor(LazyExecutor, ProcessPoolExecutor):
+    """ProcessPoolExecutor with lazy iterable collection in map().
+
+    Implmentation taken from https://github.com/python/cpython/pull/707
+
+    """
+
+    def map(self, fn, *iterables, timeout=None, chunksize=1, prefetch=None):
+        """Returns an iterator equivalent to map(fn, iter).
+        Args:
+            fn: A callable that will take as many arguments as there are
+                passed iterables.
+            timeout: The maximum number of seconds to wait. If None, then there
+                is no limit on the wait time.
+            chunksize: If greater than one, the iterables will be chopped into
+                chunks of size chunksize and submitted to the process pool.
+                If set to one, the items in the list will be sent one at a time.
+        Returns:
+            An iterator equivalent to: map(func, *iterables) but the calls may
+            be evaluated out-of-order.
+        Raises:
+            TimeoutError: If the entire result iterator could not be generated
+                before the given timeout.
+            Exception: If fn(*args) raises for any values.
+        """
+        if chunksize < 1:
+            raise ValueError("chunksize must be >= 1.")
+
+        results = super().map(
+            partial(_process_chunk, fn),
+            _get_chunks(*iterables, chunksize=chunksize), timeout=timeout,
+            prefetch=prefetch)
+        return itertools.chain.from_iterable(results)
