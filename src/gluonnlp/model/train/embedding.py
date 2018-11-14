@@ -233,9 +233,11 @@ class SentencePieceEmbeddingModel(CSREmbeddingModel):
             tokens = [tokens]
             squeeze = True
 
-        idxs = [[self._token_to_idx[t]] + self._backoff(t)
-                if t in self._token_to_idx else self._backoff(t)
-                for t in tokens]
+        offset = len(self._token_to_idx)
+        idxs = [
+            [self._token_to_idx[t]] + [b + offset for b in self._backoff(t)]
+            if t in self._token_to_idx else [
+                b + offset for b in self._backoff(t)] for t in tokens]
 
         data = np.concatenate(
             [[1 / len(idxs[i])] * len(idxs[i]) for i in range(len(tokens))])
