@@ -11,17 +11,20 @@ load all data to memory but need to iterate lazily.
 import collections
 import itertools
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import (Executor, ThreadPoolExecutor,
+                                ProcessPoolExecutor)
+from concurrent.futures.process import _process_chunk, _get_chunks
+from functools import partial
 
 
-class LazyThreadPoolExecutor(ThreadPoolExecutor):
+class LazyExecutor(Executor):
     """ThreadPoolExecutor with lazy iterable collection in map().
 
     Implmentation taken from https://github.com/python/cpython/pull/707
 
     """
 
-    def map(self, fn, *iterables, timeout=None, prefetch=None):
+    def map(self, fn, *iterables, timeout=None, chunksize=1, prefetch=None):
         # pylint: disable=arguments-differ
         """Lazy apdaption of ThreadPoolExecutor.map.
 
@@ -74,3 +77,13 @@ class LazyThreadPoolExecutor(ThreadPoolExecutor):
                     future.cancel()
 
         return _result_iterator()
+
+
+class LazyThreadPoolExecutor(LazyExecutor, ThreadPoolExecutor):
+    """ThreadPoolExecutor with lazy iterable collection in map().
+
+    Implmentation taken from https://github.com/python/cpython/pull/707
+
+    """
+
+    pass

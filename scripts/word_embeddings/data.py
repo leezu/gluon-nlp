@@ -43,6 +43,7 @@ from gluonnlp import Vocab
 from gluonnlp.base import numba_njit
 from gluonnlp.data import CorpusDataset, SimpleDatasetStream
 from utils import print_time
+import sentencepiecewrap
 
 
 def text8(min_freq=5, max_vocab_size=None):
@@ -395,17 +396,20 @@ def transform_data_sentencepiece(
         batchify_fn = cbow_sentencepiece_batch
     else:
         batchify_fn = skipgram_sentencepiece_batch
-    tokenizer = nlp.data.SentencepieceTokenizer(
-        sentencepiece_path, sentencepiece_num_best, sentencepiece_alpha)
-    batchify_fn = functools.partial(batchify_fn, vocab=vocab,
-                                    tokenizer=tokenizer, dtype=dtype,
-                                    index_dtype=index_dtype)
+
+    subword_lookup = sentencepiecewrap.SentencePieceWrap(sentencepiece_path)
+    subword_lookup.set_tokens(vocab.idx_to_token)
+    batchify_fn = functools.partial(
+        batchify_fn, vocab=vocab, dtype=dtype, subword_lookup=subword_lookup,
+        sentencepiece_num_best=sentencepiece_num_best,
+        sentencepiece_alpha=sentencepiece_alpha, index_dtype=index_dtype)
 
     return data, batchify_fn
 
 
-def cbow_sentencepiece_batch(centers, contexts, vocab, tokenizer, dtype,
-                             index_dtype):
+def cbow_sentencepiece_batch(centers, contexts, vocab, subword_lookup,
+                             sentencepiece_num_best, sentencepiece_alpha,
+                             dtype, index_dtype):
     """Create a batch for CBOW training objective with subwords."""
     raise NotImplementedError
     _, contexts_row, contexts_col = contexts
@@ -417,29 +421,17 @@ def cbow_sentencepiece_batch(centers, contexts, vocab, tokenizer, dtype,
     return centers, contexts
 
 
-def skipgram_sentencepiece_batch(centers, contexts, vocab, tokenizer, dtype,
-                                 index_dtype):
+def skipgram_sentencepiece_batch(centers, contexts, subword_lookup,
+                                 sentencepiece_num_best, sentencepiece_alpha,
+                                 vocab, dtype, index_dtype):
     """Create a batch for SG training objective with subwords."""
     contexts = mx.nd.array(contexts[2], dtype=index_dtype)
 
-    tokens = [vocab.idx_to_token[idx] for idx in centers.tolist()]
-    subwords = [
-        tokenizer._processor.SampleEncodeAsIds(t, tokenizer._nbest,
-                                               tokenizer._alpha)
-        for t in tokens]
-
-    data = [[1 / (len(s) + 1)] * (len(s) + 1) for i, s in enumerate(subwords)]
-    row = [[i] * (len(s) + 1) for i, s in enumerate(subwords)]
-    col = [[idx] + [s_idx + len(vocab) for s_idx in s]
-           for idx, s in zip(centers, subwords)]
-
-    data = np.concatenate(data)
-    row = np.concatenate(row)
-    col = np.concatenate(col)
-
+    data, row, col = subword_lookup.sample_skipgram(
+        centers, sentencepiece_num_best, sentencepiece_alpha, len(vocab))
     centers_csr = mx.nd.sparse.csr_matrix(
         (data, (row, col)), dtype=dtype,
-        shape=(len(centers), len(vocab) + len(tokenizer)))  # yapf: disable
+        shape=(len(centers), len(vocab) + len(subword_lookup)))
     centers = mx.nd.array(centers, dtype=index_dtype)
     return centers_csr, contexts, centers
 
