@@ -44,7 +44,7 @@ from gluonnlp.data import CorpusDataset, SimpleDatasetStream
 from utils import print_time
 
 
-def text8(min_freq=5, max_vocab_size=None, toy=False):
+def preprocess_dataset(data, min_freq=5, max_vocab_size=None):
     """Text8 dataset helper.
 
     Parameters
@@ -54,8 +54,6 @@ def text8(min_freq=5, max_vocab_size=None, toy=False):
         and returned DataStream.
     max_vocab_size : int, optional
         Specifies a maximum size for the vocabulary.
-    toy : bool
-        Toy mode. If True, only return first 20000 words.
 
     Returns
     -------
@@ -70,10 +68,7 @@ def text8(min_freq=5, max_vocab_size=None, toy=False):
         dataset.
 
     """
-    with print_time('read data'):
-        data = nlp.data.Text8(segment='train')
-        if toy:
-            data = mx.gluon.data.SimpleDataset(data[:2])
+    with print_time('count and construct vocabulary'):
         counter = nlp.data.count_tokens(itertools.chain.from_iterable(data))
         vocab = nlp.Vocab(counter, unknown_token=None, padding_token=None,
                           bos_token=None, eos_token=None, min_freq=min_freq,
