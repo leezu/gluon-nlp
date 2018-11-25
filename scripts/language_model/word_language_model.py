@@ -53,6 +53,15 @@ parser.add_argument('--model', type=str, default='lstm',
                     help='type of recurrent net (rnn_tanh, rnn_relu, lstm, gru)')
 parser.add_argument('--emsize', type=int, default=400,
                     help='size of word embeddings')
+parser.add_argument('--write-vocab', type=str, default=None,
+                    help='Write vocabulary to specified path. '
+                    'Useful to generate the --pretrained-embeddings')
+parser.add_argument('--pretrained-embeddings', type=str, default=None,
+                    help='Path to pretrained embeddings to be read with'
+                    'nlp.embedding.TokenEmbedding.from_file')
+parser.add_argument('--fix-embeddings', action='store_true',
+                    help='Do not train emebedding layer. '
+                    'Only sensible if --pretrained-embeddings is specified')
 parser.add_argument('--nhid', type=int, default=1150,
                     help='number of hidden units per layer')
 parser.add_argument('--nlayers', type=int, default=3,
@@ -124,6 +133,13 @@ train_dataset, val_dataset, test_dataset = \
      for segment in ['train', 'val', 'test']]
 
 vocab = nlp.Vocab(counter=nlp.data.Counter(train_dataset), padding_token=None, bos_token=None)
+
+if args.write_vocab is not None:
+    with open(args.write_vocab, "w") as f:
+        f.write(vocab.to_json())
+    print('Wrote vocabulary to {}'.format(args.write_vocab))
+    sys.exit(0)
+
 train_batchify = nlp.data.batchify.CorpusBatchify(vocab, args.batch_size)
 train_data = train_batchify(train_dataset)
 val_batch_size = 10
@@ -164,7 +180,23 @@ else:
     model = nlp.model.train.StandardRNN(args.model, len(vocab), args.emsize,
                                         args.nhid, args.nlayers, args.dropout, args.tied)
 
+if args.fix_embeddings:
+    model.embedding[0].weight.grad_req = 'null'
+
 model.initialize(mx.init.Xavier(), ctx=context)
+
+if args.pretrained_embeddings is not None:
+    embedding = nlp.embedding.TokenEmbedding.from_file(
+        args.pretrained_embeddings)
+
+    if not embedding.idx_to_vec.shape[1] == args.emsize:
+        print('--emsize {} and dimensionality of --pretrained-embeddings ({})'
+              ' must be equal'.format(args.emsize,
+                                      embedding.idx_to_vec.shape[1]))
+        sys.exit(1)
+
+    vocab.set_embedding(embedding)
+    model.embedding[0].weight.set_data(vocab.embedding.idx_to_vec)
 
 model.hybridize(static_alloc=True)
 
@@ -379,7 +411,9 @@ def train():
             for L in Ls:
                 L.backward()
 
-            grads = [p.grad(d.context) for p in parameters.values() for d in data_list]
+            grads = [
+                p.grad(d.context) for p in parameters.values()
+                for d in data_list if p.grad_req != 'null']
             gluon.utils.clip_global_norm(grads, args.clip)
 
             if args.ntasgd and ntasgd:

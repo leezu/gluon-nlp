@@ -127,6 +127,10 @@ def parse_args():
         'in addition to at the end of every epoch.')
     group.add_argument('--no-eval-analogy', action='store_true',
                        help='Don\'t evaluate on the analogy task.')
+    group.add_argument(
+        '--serialize-token-embedding-for-vocab', type=str,
+        help='Create a nlp.embedding.TokenEmbedding '
+        'for specified vocabulary.')
 
     # Evaluation options
     evaluation.add_parameters(parser)
@@ -313,6 +317,23 @@ def train(args):
     with print_time('evaluate'):
         evaluate(args, embedding, vocab, num_update,
                  eval_analogy=not args.no_eval_analogy)
+
+    # Serialize embedding
+    if args.serialize_token_embedding_for_vocab is not None:
+        with open(args.serialize_token_embedding_for_vocab, 'r') as f:
+            serialization_vocab = nlp.Vocab.from_json(f.read())
+        serialization_tokens = [
+            t for t in serialization_vocab.idx_to_token
+            if t not in serialization_vocab.reserved_tokens
+            and t != serialization_vocab.unknown_token]
+        serialization_embedding = nlp.embedding.TokenEmbedding(
+            unknown_token=None, allow_extend=True)
+        serialization_embedding[serialization_tokens] = \
+            embedding[serialization_tokens]
+        serialization_path = os.path.join(args.logdir, 'token_embedding.npz')
+        serialization_embedding.serialize(serialization_path)
+        print('Serialized emebedding for specified words to {}'.format(
+            serialization_path))
 
     # Save params
     with print_time('save parameters'):
