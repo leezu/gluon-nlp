@@ -275,7 +275,7 @@ def train(args):
     vocab, row, col, counts = get_train_data(args)
     model = GloVe(token_to_idx=vocab.token_to_idx, output_dim=args.emsize,
                   dropout=args.dropout, x_max=args.x_max, alpha=args.alpha,
-                  weight_initializer=mx.init.Uniform(scale=1 / args.emsize))
+                  weight_initializer=mx.init.Uniform(scale=0.5 / args.emsize))
     context = get_context(args)
     model.initialize(ctx=context)
     if not args.no_hybridize:
