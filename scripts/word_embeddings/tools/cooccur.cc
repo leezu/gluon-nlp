@@ -73,15 +73,21 @@ auto ParseArgs(int argc, char **argv) {
   std::ios::sync_with_stdio(false);
 
   Arguments args;
-  CLI::App app("Simple tool to calculate word-word cooccurrence statistics");
+  CLI::App app("Simple tool to calculate word-word cooccurrence statistics.\n\n"
+               "Reads corpus from file names specified as command line arguments.\n"
+               "Reads vocabulary from stdin.\n\n"
+               "Usage example: "
+               "./cooccur corpus1.txt corpus2.txt < vocab.txt"
+               "\n\n");
   std::vector<fs::path> files;
-  app.add_option("FILES", files, "File names")->check(CLI::ExistingPath);
+  app.add_option("FILES", files, "Corpus file names")->check(CLI::ExistingPath);
   std::string output = "cooccurrences.npz";
   app.add_option("-o,--output", output,
                  "Output file name. Co-occurence matrix is saved as "
-                 "scipy.sparse compatible CSR matrix in a numpy .npz archive");
+                 "scipy.sparse compatible CSR matrix in a numpy .npz archive",
+                 true);
   app.add_option("-w,--window-size", args.window_size,
-                 "Window size in which to count co-occurences.");
+                 "Window size in which to count co-occurences.", true);
   app.add_flag("--no-symmetric", args.no_symmetric,
                "If not specified, a symmetric context window is used.");
   app.add_flag("--subsample", args.subsample,
@@ -90,13 +96,14 @@ auto ParseArgs(int argc, char **argv) {
   app.add_set("-c,--context-weights", args.context_weight,
               {ContextWeight::Harmonic, ContextWeight::DistanceOverSize,
                ContextWeight::None},
-              "Weighting scheme for contexts.")
+              "Weighting scheme for contexts.", true)
       ->type_name("ContextWeight in {Harmonic=0, DistanceOverSize=1, None=2}");
   app.add_option(
          "-j,--numThreads", args.num_threads,
          "Number of threads to use. Each thread constructs an "
          "independent vocabulary which are finally merged. Only appropriate "
-         "when multiple, sufficiently large input files are specified.")
+         "when multiple, sufficiently large input files are specified.",
+         true)
       ->check(CLI::Range(1U, std::numeric_limits<unsigned int>::max()));
 
   try {

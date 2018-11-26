@@ -95,19 +95,25 @@ int main(int argc, char **argv) {
   // Performance optimizations for writing to stdout
   std::ios::sync_with_stdio(false);
 
-  CLI::App app("Simple tool to extract unigram counts");
+  CLI::App app(
+      "Simple tool to extract unigram counts\n\n"
+      "Reads corpus from file names specified as command line arguments.\n"
+      "Writes vocabulary and word counts to stdout."
+      "\n\n");
   std::vector<std::string> files;
   app.add_option("FILES", files, "File names")->check(CLI::ExistingPath);
   unsigned int minCount = 10;
   app.add_option("-c,--minCount", minCount,
                  "Minimum number of occurences required for a word to be "
-                 "included in the vocabulary.");
+                 "included in the vocabulary.",
+                 true);
   unsigned int num_threads = 1;
   app.add_option(
          "-j,--num_threads", num_threads,
          "Number of threads to use. Each thread constructs an "
          "independent vocabulary which are finally merged. Only appropriate "
-         "when multiple, sufficiently large input files are specified.")
+         "when multiple, sufficiently large input files are specified.",
+         true)
       ->check(CLI::Range(1U, std::numeric_limits<unsigned int>::max()));
   CLI11_PARSE(app, argc, argv);
 
