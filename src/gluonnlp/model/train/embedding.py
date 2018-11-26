@@ -240,7 +240,9 @@ class SentencePieceEmbeddingModel(CSREmbeddingModel):
                 b + offset for b in self._backoff(t)] for t in tokens]
 
         data = np.concatenate(
-            [[1 / len(idxs[i])] * len(idxs[i]) for i in range(len(tokens))])
+            [[1 / len(idxs[i])] * len(idxs[i]) if len(idxs[i]) else []
+             for i in range(len(tokens))])
+
         row = np.concatenate([[i] * len(idxs[i]) for i in range(len(tokens))])
         col = np.concatenate(idxs)
         x = nd.sparse.csr_matrix(
