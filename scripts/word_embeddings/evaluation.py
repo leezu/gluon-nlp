@@ -148,13 +148,11 @@ def evaluate_similarity(args, token_embedding, ctx, logfile=None,
         # Evaluate all datasets
         for (dataset_name, dataset_kwargs,
              dataset) in iterate_similarity_datasets(args):
-            initial_length = len(dataset)
             dataset_coded = [[
                 token_embedding.token_to_idx[d[0]],
                 token_embedding.token_to_idx[d[1]], d[2]
             ] for d in dataset if d[0] in token_embedding.token_to_idx
                              and d[1] in token_embedding.token_to_idx]
-            num_dropped = initial_length - len(dataset_coded)
 
             # All words are unknown
             if not len(dataset_coded):
@@ -178,7 +176,7 @@ def evaluate_similarity(args, token_embedding, ctx, logfile=None,
                 dataset_kwargs=dataset_kwargs,
                 similarity_function=similarity_function,
                 spearmanr=correlation,
-                num_dropped=num_dropped,
+                num=len(dataset_coded),
                 global_step=global_step,
             )
             log_similarity_result(logfile, result)
@@ -207,7 +205,6 @@ def evaluate_analogy(args, token_embedding, ctx, logfile=None, global_step=0):
 
         for (dataset_name, dataset_kwargs,
              dataset) in iterate_analogy_datasets(args):
-            initial_length = len(dataset)
             dataset_coded = [[
                 token_embedding.token_to_idx[d[0]],
                 token_embedding.token_to_idx[d[1]],
@@ -217,7 +214,6 @@ def evaluate_analogy(args, token_embedding, ctx, logfile=None, global_step=0):
                              and d[1] in token_embedding.token_to_idx
                              and d[2] in token_embedding.token_to_idx
                              and d[3] in token_embedding.token_to_idx]
-            num_dropped = initial_length - len(dataset_coded)
 
             dataset_coded_batched = mx.gluon.data.DataLoader(
                 dataset_coded, batch_size=args.eval_batch_size)
@@ -241,7 +237,7 @@ def evaluate_analogy(args, token_embedding, ctx, logfile=None, global_step=0):
                 dataset_kwargs=dataset_kwargs,
                 analogy_function=analogy_function,
                 accuracy=acc.get()[1],
-                num_dropped=num_dropped,
+                num=len(dataset_coded),
                 global_step=global_step,
             )
             log_analogy_result(logfile, result)
@@ -264,7 +260,7 @@ def log_similarity_result(logfile, result):
             json.dumps(result['dataset_kwargs']),
             result['similarity_function'],
             str(result['spearmanr']),
-            str(result['num_dropped']),
+            str(result['num']),
         ]))
 
         f.write('\n')
@@ -285,6 +281,6 @@ def log_analogy_result(logfile, result):
             json.dumps(result['dataset_kwargs']),
             result['analogy_function'],
             str(result['accuracy']),
-            str(result['num_dropped']),
+            str(result['num']),
         ]))
         f.write('\n')
