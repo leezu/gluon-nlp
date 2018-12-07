@@ -61,6 +61,10 @@ def get_args():
         help=('Specify load_ngrams=True '
               'when loading pretrained fastText embedding.'))
     group.add_argument(
+        '--fasttext-zero-words', action='store_true', help=
+        'Discard all word-level vectors. Evaluate based on subword information only.'
+    )
+    group.add_argument(
         '--max-vocab-size', type=int, default=None,
         help=('Only retain the X first tokens from the pre-trained embedding. '
               'The tokens are ordererd by decreasing frequency.'
@@ -136,6 +140,10 @@ def load_embedding_from_path(args):
             model = \
                 nlp.model.train.FasttextEmbeddingModel.load_fasttext_format(
                     args.embedding_path)
+
+        if args.fasttext_zero_words:
+            num_words = len(model._token_to_idx)
+            model.weight.data()[:num_words] = 0
 
         embedding = nlp.embedding.TokenEmbedding(
             unknown_token=None, unknown_lookup=model, allow_extend=True)
