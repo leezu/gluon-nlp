@@ -69,6 +69,14 @@ def add_parameters(parser):
               'The performance of word embeddings on the analogy task '
               'is around 0% accuracy if input words are not excluded.'))
 
+    ## Senteval
+    group.add_argument(
+        '--senteval-data', type=str, help='Folder containing SentEval data. '
+        'https://github.com/facebookresearch/SentEval/'
+        'blob/master/data/downstream/get_transfer_data.bash')
+    group.add_argument(
+        '--senteval-no-expand-unknown', action='store_true')
+
 
 def validate_args(args):
     """Validate provided arguments and act on --help."""
@@ -247,6 +255,77 @@ def evaluate_analogy(args, token_embedding, ctx, logfile=None, global_step=0):
             log_analogy_result(logfile, result)
             results.append(result)
     return results
+
+
+def evaluate_senteval_bow(args, token_embedding, ctx, logfile=None,
+                          global_step=0, setloglevel=True):
+    """Call SentEval with model."""
+    if setloglevel:
+        logging.getLogger().setLevel(logging.DEBUG)
+
+    assert 'gpu' in str(ctx), 'SentEval is only supported on GPU.'
+    import torch
+    assert torch.cuda.is_available(), 'SentEval requires PyTorch with GPU.'
+
+    def prepare(params, samples):
+        counter = nlp.data.count_tokens(itertools.chain.from_iterable(samples))
+        to_del = []
+        for token in counter:
+            if token in token_embedding:
+                continue
+            if not args.senteval_no_expand_unknown and \
+               token_embedding.unknown_lookup is not None and \
+               token in token_embedding.unknown_lookup:
+                continue
+            to_del.append(token)
+        for token in to_del:
+            del counter[token]
+        vocab = nlp.Vocab(counter, padding_token=None, bos_token=None,
+                          eos_token=None)
+        vocab.set_embedding(token_embedding)
+        params.vocab = vocab
+
+    def batcher(params, batch):
+        batch = [sent if sent else ['.'] for sent in batch]
+        embeddings = []
+
+        for sent in batch:
+            sent_known = [w for w in sent if w in params.vocab]
+            if sent_known:
+                sentvec = params.vocab.embedding[sent_known]
+                sentvec = sentvec.mean(axis=0).asnumpy()
+            else:
+                sentvec = np.zeros(params.vocab.embedding.idx_to_vec.shape[1])
+            embeddings.append(sentvec)
+
+        embeddings = np.vstack(embeddings)
+        return embeddings
+
+    params_senteval = {
+        'task_path': args.senteval_data, 'usepytorch': True, 'kfold': 10}
+    # params_senteval = {  # faster prototyping config
+    #     'task_path': args.senteval_data, 'usepytorch': True, 'kfold': 5}
+    params_senteval['classifier'] = {
+        'nhid': 0, 'optim': 'adam', 'batch_size': 64, 'tenacity': 3,
+        'epoch_size': 2}
+    # params_senteval['classifier'] = {  # faster prototyping config
+    #     'nhid': 0, 'optim': 'rmsprop', 'batch_size': 128, 'tenacity': 3,
+    #     'epoch_size': 2}
+
+    import senteval
+    se = senteval.engine.SE(params_senteval, batcher, prepare)
+
+    transfer_tasks = [
+        'STS12', 'STS13', 'STS14', 'STS15', 'STS16', 'MR', 'CR', 'MPQA',
+        'SUBJ', 'SST2', 'SST5', 'TREC', 'MRPC',
+        'SICKEntailment', 'SICKRelatedness', 'STSBenchmark',
+        'Length', 'WordContent', 'Depth', 'TopConstituents',
+        'BigramShift', 'Tense', 'SubjNumber', 'ObjNumber',
+        'OddManOut', 'CoordinationInversion']
+    results = se.eval(transfer_tasks)
+
+    with open(logfile, "w") as f:
+        json.dump(results, f, indent=2)
 
 
 def log_similarity_result(logfile, result):

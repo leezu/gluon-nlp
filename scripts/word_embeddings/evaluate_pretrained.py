@@ -234,3 +234,14 @@ if __name__ == '__main__':
         analogy_results = evaluation.evaluate_analogy(
             args_, token_embedding_, ctx, logfile=os.path.join(
                 args_.logdir, 'analogy{}.tsv'.format(name)))
+    if args_.senteval_data:
+        if token_embedding_.idx_to_vec is None:
+            # idx_to_vec was not initialized yet as analogy and similarity task
+            # is disabled. We don't know which words senteval will evaluate on,
+            # so we can't initialize based on these words. As we must
+            # initialize, we pick a random word.
+            token_embedding_["hello"] = token_embedding_.unknown_lookup["hello"]
+
+        evaluation.evaluate_senteval_bow(
+            args_, token_embedding_, ctx, logfile=os.path.join(
+                args_.logdir, 'senteval{}.tsv'.format(name)))
