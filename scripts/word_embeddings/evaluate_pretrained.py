@@ -30,6 +30,9 @@ import logging
 import os
 import sys
 
+import mxnet as mx
+
+import datasets
 import evaluation
 import gluonnlp as nlp
 import utils
@@ -55,6 +58,11 @@ def get_args():
                        help=('Source from which to initialize the embedding.'
                              'Pass --list-embedding-sources to get a list of '
                              'valid sources for a given --embedding-name.'))
+    group.add_argument('--classification-serialize-token-embedding', type=str,
+                       help='Do not compute evaluation results on '
+                       'classification task, but retrieve all tokens '
+                       'required and serialize their computed embeddings. '
+                       'They are saved to the specified path.')
     group.add_argument(
         '--fasttext-load-ngrams',
         action='store_true',
@@ -147,7 +155,8 @@ def load_embedding_from_path(args):
             model.weight.data()[:num_words] = 0
 
         embedding = nlp.embedding.TokenEmbedding(
-            unknown_token=None, unknown_lookup=model, allow_extend=True)
+            unknown_token='<unk>', unknown_lookup=model, allow_extend=True)
+        embedding['<unk>'] = mx.nd.zeros(model.weight.shape[1])
 
         # Analogy task is open-vocabulary, so must keep all known words.
         # But if not evaluating analogy, no need to precompute now as all
@@ -246,3 +255,20 @@ if __name__ == '__main__':
         evaluation.evaluate_senteval_bow(
             args_, token_embedding_, ctx, logfile=os.path.join(
                 args_.logdir, 'senteval{}.tsv'.format(name)))
+    if args_.classification_datasets:
+        with utils.print_time('find relevant tokens for classification'):
+            tokens = datasets.get_tokens(args_.classification_datasets)
+        vocab = nlp.Vocab(nlp.data.count_tokens(tokens))
+        with utils.print_time('set {} embeddings'.format(len(tokens))):
+            vocab.set_embedding(token_embedding_)
+
+        if args_.classification_serialize_token_embedding:
+            with utils.print_time('serializing relevant embeddings'):
+                vocab.embedding.serialize(
+                    args_.classification_serialize_token_embedding,
+                    compress=False)
+        else:
+            with utils.print_time('evaluate classification task'):
+                evaluation.evaluate_classification(
+                    args_, vocab.embedding, logfile=os.path.join(
+                        args_.logdir, 'classification{}.json'.format(name)))

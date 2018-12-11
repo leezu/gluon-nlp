@@ -69,6 +69,11 @@ def add_parameters(parser):
               'The performance of word embeddings on the analogy task '
               'is around 0% accuracy if input words are not excluded.'))
 
+    ## Classification tasks
+    group.add_argument(
+        '--classification-datasets', type=str, nargs='*', default=[
+            'affix_prediction', 'mr', 'subj', 'imdb', 'pos', 'chunk'])
+
     ## Senteval
     group.add_argument(
         '--senteval-data', type=str, help='Folder containing SentEval data. '
@@ -336,6 +341,11 @@ def evaluate_senteval_bow(args, token_embedding, ctx, logfile=None,
 
     with open(logfile, "w") as f:
         json.dump(results, f, indent=2)
+
+
+def evaluate_classification(args, token_embedding, logfile=None):
+    from datasets.engine import run
+    run(args.classification_datasets, token_embedding, logfile=logfile)
 
 
 def log_similarity_result(logfile, result):
