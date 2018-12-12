@@ -73,6 +73,10 @@ def get_args():
         'Discard all word-level vectors. Evaluate based on subword information only.'
     )
     group.add_argument(
+        '--fasttext-bin-no-oov', action='store_true', help=
+        'Do not expand OOV words but only consider words seen during training.'
+    )
+    group.add_argument(
         '--analogy-max-vocab-size', type=int, default=None,
         help=('Only retain the X first tokens from the pre-trained embedding. '
               'The tokens are ordererd by decreasing frequency.'
@@ -154,18 +158,22 @@ def load_embedding_from_path(args):
             num_words = len(model._token_to_idx)
             model.weight.data()[:num_words] = 0
 
-        embedding = nlp.embedding.TokenEmbedding(
-            unknown_token='<unk>', unknown_lookup=model, allow_extend=True)
-        embedding['<unk>'] = mx.nd.zeros(model.weight.shape[1])
+        if not args.fasttext_bin_no_oov:
+            embedding = nlp.embedding.TokenEmbedding(
+                unknown_token='<unk>', unknown_lookup=model, allow_extend=True)
+            embedding['<unk>'] = mx.nd.zeros(model.weight.shape[1])
 
-        # Analogy task is open-vocabulary, so must keep all known words.
-        # But if not evaluating analogy, no need to precompute now as all
-        # words for closed vocabulary task can be obtained via the unknown
-        # lookup
-        if not args.analogy_datasets:
-            idx_to_token = []
-        elif args.analogy_datasets and args.analogy_max_vocab_size:
-            idx_to_token = idx_to_token[:args.analogy_max_vocab_size]
+            # Analogy task is open-vocabulary, so must keep all known words.
+            # But if not evaluating analogy, no need to precompute now as all
+            # words for closed vocabulary task can be obtained via the unknown
+            # lookup
+            if not args.analogy_datasets:
+                idx_to_token = []
+            elif args.analogy_datasets and args.analogy_max_vocab_size:
+                idx_to_token = idx_to_token[:args.analogy_max_vocab_size]
+        else:
+            embedding = nlp.embedding.TokenEmbedding(
+                unknown_token='<unk>', allow_extend=True)
 
         embedding['<unk>'] = mx.nd.zeros(model.weight.shape[1])
         if idx_to_token:
