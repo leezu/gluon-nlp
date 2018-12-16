@@ -73,6 +73,10 @@ def get_args():
         'Discard all word-level vectors. Evaluate based on subword information only.'
     )
     group.add_argument(
+        '--fasttext-bin-only-oov', action='store_true', help=
+        'Expand OOV words, but replace all known words with 0 vector.'
+    )
+    group.add_argument(
         '--fasttext-bin-no-oov', action='store_true', help=
         'Do not expand OOV words but only consider words seen during training.'
     )
@@ -158,7 +162,17 @@ def load_embedding_from_path(args):
             num_words = len(model._token_to_idx)
             model.weight.data()[:num_words] = 0
 
-        if not args.fasttext_bin_no_oov:
+        if args.fasttext_bin_no_oov:
+            assert not args.fasttext_bin_only_oov
+            embedding = nlp.embedding.TokenEmbedding(
+                unknown_token='<unk>', allow_extend=True)
+        elif args.fasttext_bin_only_oov:
+            assert not args.fasttext_bin_no_oov
+            assert not args.analogy_datasets
+            assert idx_to_token
+            embedding = nlp.embedding.TokenEmbedding(
+                unknown_token='<unk>', unknown_lookup=model, allow_extend=True)
+        else:
             embedding = nlp.embedding.TokenEmbedding(
                 unknown_token='<unk>', unknown_lookup=model, allow_extend=True)
             embedding['<unk>'] = mx.nd.zeros(model.weight.shape[1])
@@ -171,15 +185,15 @@ def load_embedding_from_path(args):
                 idx_to_token = []
             elif args.analogy_datasets and args.analogy_max_vocab_size:
                 idx_to_token = idx_to_token[:args.analogy_max_vocab_size]
-        else:
-            embedding = nlp.embedding.TokenEmbedding(
-                unknown_token='<unk>', allow_extend=True)
 
         embedding['<unk>'] = mx.nd.zeros(model.weight.shape[1])
         if idx_to_token:
             with utils.print_time('compute vectors for {} known '
                                   'words.'.format(len(idx_to_token))):
                 embedding[idx_to_token] = model[idx_to_token]
+            if args.fasttext_bin_only_oov:
+                embedding[idx_to_token] = mx.nd.zeros_like(
+                    embedding[idx_to_token])
     else:
         embedding = nlp.embedding.TokenEmbedding.from_file(args.embedding_path)
 
