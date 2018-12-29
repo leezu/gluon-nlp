@@ -36,6 +36,7 @@ import datasets
 import evaluation
 import gluonnlp as nlp
 import utils
+from gluonnlp.model.train import FasttextEmbeddingModel
 
 
 def get_args():
@@ -68,6 +69,10 @@ def get_args():
         action='store_true',
         help=('Specify load_ngrams=True '
               'when loading pretrained fastText embedding.'))
+    group.add_argument(
+        '--fasttext-zero-unused-subwords', action='store_true', help=
+        'Discard all untrained subword vectors.'
+    )
     group.add_argument(
         '--fasttext-zero-words', action='store_true', help=
         'Discard all word-level vectors. Evaluate based on subword information only.'
@@ -153,9 +158,11 @@ def load_embedding_from_path(args):
     """Load a TokenEmbedding."""
     if args.embedding_path.endswith('.bin'):
         with utils.print_time('load fastText model.'):
-            model = \
-                nlp.model.train.FasttextEmbeddingModel.load_fasttext_format(
-                    args.embedding_path)
+            model = FasttextEmbeddingModel.load_fasttext_format(
+                args.embedding_path)
+            if args.fasttext_zero_unused_subwords:
+                numzeroed = model.zero_unused_subwords()
+                logging.info('Set %s subword vectors to zero.', numzeroed)
         idx_to_token = sorted(model._token_to_idx, key=model._token_to_idx.get)
 
         if args.fasttext_zero_words:

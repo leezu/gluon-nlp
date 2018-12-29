@@ -22,6 +22,7 @@
 
 __all__ = ['EmbeddingModel', 'CSREmbeddingModel', 'FasttextEmbeddingModel']
 
+import itertools
 import logging
 import struct
 import warnings
@@ -227,6 +228,29 @@ class FasttextEmbeddingModel(EmbeddingModel, HybridBlock):
             'weight', shape=(len(token_to_idx) + len(subword_function), output_dim),
             init=weight_initializer, dtype=dtype,
             allow_deferred_init=True, grad_stype=grad_stype)  # yapf: disable
+
+    def zero_unused_subwords(self):
+        """Zero subword vectors of subwords unseen during training.
+
+        Returns
+        -------
+        Number of subword vectors set to 0.
+
+        """
+        all_subwords = np.ones(len(self._subword_function), dtype=bool)
+        seen_subwords = set(
+            itertools.chain.from_iterable(
+                self._subword_function(self._token_to_idx.keys())))
+        seen_subwords = np.array(list(seen_subwords), dtype=int)
+        all_subwords[seen_subwords] = 0
+        ctx = self.weight.list_ctx()[0]
+        unseen_subwords = np.where(all_subwords)[0]
+        if len(unseen_subwords):
+            unseen_subwords += len(self._token_to_idx)
+            data = self.weight.data(ctx)
+            data[nd.array(unseen_subwords, ctx=ctx)] = 0
+            self.weight.set_data(data)
+        return len(unseen_subwords)
 
     @classmethod
     def load_fasttext_format(cls, path, ctx=cpu(), **kwargs):
