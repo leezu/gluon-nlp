@@ -113,7 +113,10 @@ def iterate_similarity_datasets(args):
         parameters = nlp.data.list_datasets(dataset_name)
         for key_values in itertools.product(*parameters.values()):
             kwargs = dict(zip(parameters.keys(), key_values))
-            yield dataset_name, kwargs, nlp.data.create(dataset_name, **kwargs)
+            data = nlp.data.create(dataset_name, **kwargs)
+            data = data.transform(lambda s: [s[0].lower(), s[1].lower(), s[2]],
+                                  lazy=False)
+            yield dataset_name, kwargs, data
 
 
 def iterate_analogy_datasets(args):
@@ -127,10 +130,12 @@ def iterate_analogy_datasets(args):
         parameters = nlp.data.list_datasets(dataset_name)
         for key_values in itertools.product(*parameters.values()):
             kwargs = dict(zip(parameters.keys(), key_values))
-            yield dataset_name, kwargs, nlp.data.create(dataset_name, **kwargs)
+            data = nlp.data.create(dataset_name, **kwargs)
+            data = data.transform(lambda s: [e.lower() for e in s], lazy=False)
+            yield dataset_name, kwargs, data
 
 
-def get_similarity_task_tokens(args):
+def get_similarity_task_tokens(args, lower=True):
     """Returns a set of all tokens occuring the evaluation datasets."""
     tokens = set()
     for _, _, dataset in iterate_similarity_datasets(args):
@@ -139,7 +144,7 @@ def get_similarity_task_tokens(args):
     return tokens
 
 
-def get_analogy_task_tokens(args):
+def get_analogy_task_tokens(args, lower=True):
     """Returns a set of all tokens occuring the evaluation datasets."""
     tokens = set()
     for _, _, dataset in iterate_analogy_datasets(args):
@@ -192,8 +197,8 @@ def evaluate_similarity(args, token_embedding, ctx, logfile=None,
 
             logging.info(
                 'Spearman rank correlation on %s (%s pairs) %s with %s:\t%s',
-                dataset.__class__.__name__, len(dataset_coded),
-                str(dataset_kwargs), similarity_function, correlation)
+                dataset_name, len(dataset_coded), str(dataset_kwargs),
+                similarity_function, correlation)
 
             result = dict(
                 task='similarity',
@@ -253,10 +258,10 @@ def evaluate_analogy(args, token_embedding, ctx, logfile=None, global_step=0):
                 pred_idxs = evaluator(words1, words2, words3)
                 acc.update(pred_idxs[:, 0], words4.astype(np.float32))
 
-            logging.info('Accuracy on %s (%s quadruples) %s with %s:\t%s',
-                         dataset.__class__.__name__, len(dataset_coded),
-                         str(dataset_kwargs), analogy_function,
-                         acc.get()[1])
+            logging.info(
+                'Accuracy on %s (%s quadruples) %s with %s:\t%s', dataset_name,
+                len(dataset_coded), str(dataset_kwargs), analogy_function,
+                acc.get()[1])
 
             result = dict(
                 task='analogy',

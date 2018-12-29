@@ -285,6 +285,17 @@ def test_semeval17task2():
         _assert_similarity_dataset(data)
 
 
+@flaky(max_runs=2, min_passes=1)
+@pytest.mark.serial
+@pytest.mark.remote_required
+def test_gur():
+    for D, c in zip([nlp.data.Gur65, nlp.data.Gur350, nlp.data.ZG222],
+                    [65, 350, 222]):
+        data = D(root=os.path.join('tests', 'externaldata', 'gur'))
+        assert len(data) == c
+        _assert_similarity_dataset(data)
+
+
 ###############################################################################
 # Word analogy datasets
 ###############################################################################

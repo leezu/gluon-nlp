@@ -28,7 +28,7 @@ from mxnet.gluon.data.dataset import SimpleDataset
 from mxnet.gluon.utils import check_sha1, _get_repo_file_url, download
 
 from .. import _constants as C
-from .dataset import CorpusDataset
+from .dataset import CorpusDataset, TSVDataset
 from .registry import register
 from .utils import _get_home_dir
 
@@ -37,8 +37,8 @@ base_datasets = [
 ]
 word_similarity_datasets = [
     'WordSim353', 'MEN', 'RadinskyMTurk', 'RareWords', 'SimLex999',
-    'SimVerb3500', 'SemEval17Task2', 'BakerVerb143', 'YangPowersVerb130'
-]
+    'SimVerb3500', 'SemEval17Task2', 'BakerVerb143', 'YangPowersVerb130',
+    'Gur350', 'Gur65', 'ZG222']
 word_analogy_datasets = ['GoogleAnalogyTestSet', 'BiggerAnalogyTestSet']
 __all__ = base_datasets + word_similarity_datasets + word_analogy_datasets
 
@@ -673,6 +673,125 @@ class YangPowersVerb130(WordSimilarityEvaluationDataset):
     def _download_data(self):
         # Overwrite download method as this dataset is self-contained
         pass
+
+
+@register
+class _Gurevych(WordSimilarityEvaluationDataset):
+    _url = 'https://www.informatik.tu-darmstadt.de/media/ukp/data/fileupload_2/datasets.zip'
+    _archive_file = ('datasets.zip',
+                     '2497b42de95b917abe6e76fbf47e1db4614ab5a2')
+    _checksums = {
+        'wortpaare222.gold.pos.txt': '17ccc2c33c24a43fa1cb3edcc6a157e9a71d1a88',
+        'wortpaare350.gold.pos.txt': '7807dd3f06398cd99cbb7f12795a591085d0f3ea',
+        'wortpaare65.gold.pos.txt': '5a8a75d6fd61d7ffcaead8a4773eb312d4f4143d'}
+
+    min = 0
+    max = 4
+
+    _part = None
+
+    def __init__(self, root=os.path.join(_get_home_dir(), 'datasets', 'gur')):
+        super(_Gurevych, self).__init__(root=root)
+
+    def _get_data(self):
+        assert self._part is not None
+        path = os.path.join(self.root, 'datasets', self._part)
+        dataset = TSVDataset(path, field_separator=lambda s: s.split(':'),
+                             num_discard_samples=1, field_indices=[0, 1, 2])
+        return dataset
+
+
+@register
+class Gur65(_Gurevych):
+    """Gur65 dataset.
+
+    This dataset contains 65 word pairs along with their similarity scores
+    assigned on a discrete 0-4 scale by 24 subjects.
+
+    The inter-annotator agreement is 0.81.
+
+    This dataset is a German translation of the Rubenstein/Goodenough dataset
+    (Rubenstein, H. & Goodenough, J. B. Contextual Correlates of Synonymy
+    Communications of the ACM, 1965, 8, 627-633). The judgment values were not
+    adopted from their work, but newly annotated.
+
+    The dataset is described in
+
+    Iryna Gurevych:
+
+    Using the Structure of a Conceptual Network in Computing Semantic
+    Relatedness. In: Proceedings of the 2nd International Joint Conference on
+    Natural Language Processing (IJCNLP’2005), Jeju Island, Republic of Korea,
+    October 11 – 13. (to appear), 2005.
+
+    License: unspecified
+
+    Parameters
+    ----------
+    root : str, default '$MXNET_HOME/datasets/gur'
+        Path to temp folder for storing data.
+        MXNET_HOME defaults to '~/.mxnet'.
+
+    """
+    _part = 'wortpaare65.gold.pos.txt'
+
+
+@register
+class Gur350(_Gurevych):
+    """Gur350 dataset.
+
+    This dataset contains 350 word pairs along with their relatedness scores
+    assigned on a discrete 0-4 scale by 8 subjects.
+
+    The inter-annotator agreement is 0.69.
+
+    The dataset is described in
+
+    Iryna Gurevych:
+
+    Using the Structure of a Conceptual Network in Computing Semantic
+    Relatedness. In: Proceedings of the 2nd International Joint Conference on
+    Natural Language Processing (IJCNLP’2005), Jeju Island, Republic of Korea,
+    October 11 – 13. (to appear), 2005.
+
+    License: unspecified
+
+    Parameters
+    ----------
+    root : str, default '$MXNET_HOME/datasets/gur'
+        Path to temp folder for storing data.
+        MXNET_HOME defaults to '~/.mxnet'.
+
+    """
+    _part = 'wortpaare350.gold.pos.txt'
+
+
+@register
+class ZG222(_Gurevych):
+    """ZG222 dataset.
+
+    This dataset contains 222 word pairs along with their relatedness scores
+    assigned on a discrete 0-4 by 21 subjects.
+
+    The inter-annotator agreement is 0.49.
+
+    The dataset is described in
+
+    Dr. Torsten Zesch, Iryna Gurevych:
+
+    Automatically creating datasets for measures of semantic relatedness. In:
+    COLING/ACL 2006 Workshop on Linguistic Distances. pp. 16-24, 2006.
+
+    License: unspecified
+
+    Parameters
+    ----------
+    root : str, default '$MXNET_HOME/datasets/gur'
+        Path to temp folder for storing data.
+        MXNET_HOME defaults to '~/.mxnet'.
+
+    """
+    _part = 'wortpaare222.gold.pos.txt'
 
 
 ###############################################################################
