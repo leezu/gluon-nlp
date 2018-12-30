@@ -184,6 +184,13 @@ def evaluate_similarity(args, token_embedding, ctx, logfile=None,
                              and d[1] in token_embedding.token_to_idx]
             num_dropped = initial_length - len(dataset_coded)
 
+            if num_dropped > 0:
+                print('WARNING: Something is wrong '
+                      f'and {num_dropped} had to be dropped!')
+                print('len(token_embedding.token_to_idx)='
+                      f'{len(token_embedding.token_to_idx)}')
+                raise RuntimeError
+
             # All words are unknown
             if not len(dataset_coded):
                 correlation = 0
@@ -194,6 +201,11 @@ def evaluate_similarity(args, token_embedding, ctx, logfile=None,
                 sr = stats.spearmanr(pred_similarity.asnumpy(),
                                      np.array(scores))
                 correlation = sr.correlation
+
+            if correlation == 0 or not np.isfinite(correlation):
+                print('WARNING: Something is wrong '
+                      f'and correlation = {correlation}!')
+                raise RuntimeError
 
             logging.info(
                 'Spearman rank correlation on %s (%s pairs) %s with %s:\t%s',

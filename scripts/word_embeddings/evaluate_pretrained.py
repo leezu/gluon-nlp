@@ -154,9 +154,10 @@ def validate_args(args):
 
     print(args)
 
-
+model = None
 def load_embedding_from_path(args):
     """Load a TokenEmbedding."""
+    global model
     if args.embedding_path.endswith('.bin'):
         with utils.print_time('load fastText model.'):
             model = FasttextEmbeddingModel.load_fasttext_format(
@@ -266,14 +267,43 @@ if __name__ == '__main__':
     known_tokens = set(token_embedding_.idx_to_token)
 
     if args_.similarity_datasets:
+        tokens = set()
         with utils.print_time('find relevant tokens for similarity'):
             tokens = evaluation.get_similarity_task_tokens(args_)
+            for _ in range(10):
+                tokens2 = evaluation.get_similarity_task_tokens(args_)
+                if len(tokens2) > len(tokens):
+                    print(f'WARNING GOT INCONSISTENT READS {len(tokens)} {len(tokens2)}')
+                    tokens = tokens2
         vocab = nlp.Vocab(nlp.data.count_tokens(tokens))
         with utils.print_time('set {} embeddings'.format(len(tokens))):
             vocab.set_embedding(token_embedding_)
-        evaluation.evaluate_similarity(
-            args_, vocab.embedding, ctx, logfile=os.path.join(
-                args_.logdir, 'similarity{}.tsv'.format(name)))
+        if len(vocab.embedding.idx_to_vec) != len(tokens) + 4:
+            print('WARNING vocab not constructed correctly')
+            import boto.utils
+            print(boto.utils.get_instance_metadata()['instance-id'])
+            print(len(vocab.embedding.idx_to_vec), len(tokens))
+            print(len(set(evaluation.get_similarity_task_tokens(args_))))
+            sys.exit(1)
+        try:
+            evaluation.evaluate_similarity(
+                args_, vocab.embedding, ctx, logfile=os.path.join(
+                    args_.logdir, 'similarity{}.tsv'.format(name)))
+        except RuntimeError:
+            print(model.weight.data())
+            print(model.weight)
+            print(len(model._token_to_idx))
+            print(list(model._token_to_idx.keys())[:100])
+            print(vocab.embedding.idx_to_vec)
+            print(vocab.embedding.idx_to_token[:100])
+            try:
+                evaluation.evaluate_similarity(
+                    args_, vocab.embedding, ctx, logfile=os.path.join(
+                        args_.logdir, 'similarity{}.tsv'.format(name)))
+                print('RETRY SUCCEEDED')
+            except RuntimeError:
+                print('RETRY FAILED')
+                sys.exit(1)
     if args_.analogy_datasets:
         with utils.print_time('extend open vocabulary with '
                               'OOV tokens for analogy'):
