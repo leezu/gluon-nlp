@@ -26,6 +26,7 @@ embeddings using a variety of datasets all part of the Gluon NLP Toolkit.
 """
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -160,14 +161,26 @@ def load_embedding_from_path(args):
         with utils.print_time('load fastText model.'):
             model = FasttextEmbeddingModel.load_fasttext_format(
                 args.embedding_path)
+            numzeroed = 0
             if args.fasttext_zero_unused_subwords:
                 numzeroed = model.zero_unused_subwords()
                 logging.info('Set %s subword vectors to zero.', numzeroed)
         idx_to_token = sorted(model._token_to_idx, key=model._token_to_idx.get)
 
+        # Log number of zero / nonzero
+        numwords = len(model._token_to_idx)
+        weight = model.weight.data()
+        nonzerowords = (weight[:numwords].norm(axis=1) != 0).sum().asnumpy()
+        nonzerongrams = (weight[numwords:].norm(axis=1) != 0).sum().asnumpy()
+        log_value = dict(
+            nonzerowords=int(nonzerowords), nonzerongrams=int(nonzerongrams),
+            zeroedunusedngrams=numzeroed, numwords=numwords)
+        logfile = os.path.join(args.logdir, 'fasttext.json')
+        with open(logfile, 'w') as f:
+            json.dump(log_value, f)
+
         if args.fasttext_zero_words:
-            num_words = len(model._token_to_idx)
-            model.weight.data()[:num_words] = 0
+            model.weight.data()[:numwords] = 0
 
         if args.fasttext_bin_no_oov:
             assert not args.fasttext_bin_only_oov
