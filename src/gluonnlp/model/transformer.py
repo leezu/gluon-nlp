@@ -43,14 +43,41 @@ from ..base import get_home_dir
 #                               BASE ENCODER  BLOCKS                          #
 ###############################################################################
 
-def _position_encoding_init(max_length, dim):
-    """Init the sinusoid position encoding table """
-    position_enc = np.arange(max_length).reshape((-1, 1)) \
-                   / (np.power(10000, (2. / dim) * np.arange(dim).reshape((1, -1))))
-    # Apply the cosine to even columns and sin to odds.
-    position_enc[:, 0::2] = np.sin(position_enc[:, 0::2])  # dim 2i
-    position_enc[:, 1::2] = np.cos(position_enc[:, 1::2])  # dim 2i+1
-    return position_enc
+
+class PositionalEmbedding(mx.gluon.HybridBlock):
+    """Positional embedding.
+
+    Parameters
+    ----------
+    embed_size : int
+        Dimensionality of positional embeddings.
+    """
+
+    def __init__(self, embed_size, **kwargs):
+        super().__init__(**kwargs)
+
+        inv_freq = 1 / mx.nd.power(10000, mx.nd.arange(0.0, embed_size, 2.0) / embed_size)
+        with self.name_scope():
+            self.inv_freq = self.params.get_constant('inv_freq', inv_freq.reshape((1, -1)))
+
+    def hybrid_forward(self, F, pos_seq, inv_freq):
+        """Compute positional embeddings.
+
+        Parameters
+        ----------
+        pos_seq : Symbol or NDArray
+            Positions to compute embedding for. Shape (length, )
+
+        Returns
+        -------
+        pos_emb: Symbol or NDArray
+            Positional embeddings for positions secified in pos_seq. Shape
+            (length, embed_size).
+        """
+        inp = F.dot(pos_seq.reshape((-1, 1)), inv_freq)
+        pos_emb = F.concat(F.sin(inp), F.cos(inp), dim=-1)
+        return pos_emb
+
 
 def _get_layer_norm(use_bert, units, layer_norm_eps=None):
     from .bert import BERTLayerNorm
@@ -365,8 +392,8 @@ class BaseTransformerEncoder(HybridBlock, Seq2SeqEncoder):
                 self.dropout_layer = nn.Dropout(rate=dropout)
             self.layer_norm = _get_layer_norm(use_bert_encoder, units,
                                               layer_norm_eps=layer_norm_eps)
-            self.position_weight = self._get_positional(positional_weight, max_length, units,
-                                                        weight_initializer)
+            assert positional_weight == 'sinusoidal'
+            self.pos_emb = PositionalEmbedding(units)
             self.transformer_cells = nn.HybridSequential()
             for i in range(num_layers):
                 cell = self._get_encoder_cell(use_bert_encoder, units, hidden_size, num_heads,
@@ -375,16 +402,6 @@ class BaseTransformerEncoder(HybridBlock, Seq2SeqEncoder):
                                               activation=activation, layer_norm_eps=layer_norm_eps)
                 self.transformer_cells.add(cell)
 
-    def _get_positional(self, weight_type, max_length, units, initializer):
-        if weight_type == 'sinusoidal':
-            encoding = _position_encoding_init(max_length, units)
-            position_weight = self.params.get_constant('const', encoding)
-        elif weight_type == 'learned':
-            position_weight = self.params.get('position_weight', shape=(max_length, units),
-                                              init=initializer)
-        else:
-            raise ValueError('Unexpected value for argument position_weight: %s'%(position_weight))
-        return position_weight
 
     def _get_encoder_cell(self, use_bert, units, hidden_size, num_heads, attention_cell,
                           weight_initializer, bias_initializer, dropout, use_residual,
@@ -473,7 +490,7 @@ class BaseTransformerEncoder(HybridBlock, Seq2SeqEncoder):
                 super(BaseTransformerEncoder, self).forward(inputs, states)
         return step_output, additional_outputs
 
-    def hybrid_forward(self, F, inputs, states=None, valid_length=None, position_weight=None):
+    def hybrid_forward(self, F, inputs, states=None, valid_length=None):
         # pylint: disable=arguments-differ
         """
 
@@ -482,7 +499,6 @@ class BaseTransformerEncoder(HybridBlock, Seq2SeqEncoder):
         inputs : NDArray or Symbol, Shape(batch_size, length, C_in)
         states : list of NDArray or Symbol
         valid_length : NDArray or Symbol
-        position_weight : NDArray or Symbol
 
         Returns
         -------
@@ -499,7 +515,7 @@ class BaseTransformerEncoder(HybridBlock, Seq2SeqEncoder):
         if states is not None:
             steps = states[-1]
             # Positional Encoding
-            positional_embed = F.Embedding(steps, position_weight, self._max_length, self._units)
+            positional_embed = self.pos_emb(steps)
             inputs = F.broadcast_add(inputs, F.expand_dims(positional_embed, axis=0))
         if self._dropout:
             if self._use_layer_norm_before_dropout:
@@ -917,8 +933,7 @@ class TransformerDecoder(HybridBlock, Seq2SeqDecoder):
             if dropout:
                 self.dropout_layer = nn.Dropout(rate=dropout)
             self.layer_norm = nn.LayerNorm()
-            encoding = _position_encoding_init(max_length, units)
-            self.position_weight = self.params.get_constant('const', encoding)
+            self.pos_emb = PositionalEmbedding(units)
             self.transformer_cells = nn.HybridSequential()
             for i in range(num_layers):
                 self.transformer_cells.add(
@@ -1092,7 +1107,7 @@ class TransformerDecoder(HybridBlock, Seq2SeqDecoder):
             step_output = step_output[:, -1, :]
         return step_output, new_states, step_additional_outputs
 
-    def hybrid_forward(self, F, step_input, states, mask=None, position_weight=None):
+    def hybrid_forward(self, F, step_input, states, mask=None):
         #pylint: disable=arguments-differ
         """
 
@@ -1101,7 +1116,6 @@ class TransformerDecoder(HybridBlock, Seq2SeqDecoder):
         step_input : NDArray or Symbol, Shape (batch_size, length, C_in)
         states : list of NDArray or Symbol
         mask : NDArray or Symbol
-        position_weight : NDArray or Symbol
 
         Returns
         -------
@@ -1120,11 +1134,9 @@ class TransformerDecoder(HybridBlock, Seq2SeqDecoder):
             mem_value, steps = states
             mem_mask = None
         # Positional Encoding
+        positional_embed = self.pos_emb(steps)
         step_input = F.broadcast_add(step_input,
-                                     F.expand_dims(F.Embedding(steps,
-                                                               position_weight,
-                                                               self._max_length,
-                                                               self._units),
+                                     F.expand_dims(positional_embed,
                                                    axis=0))
         if self._dropout:
             step_input = self.dropout_layer(step_input)
