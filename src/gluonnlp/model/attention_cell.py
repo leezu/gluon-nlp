@@ -36,13 +36,13 @@ def _masked_softmax(F, att_score, mask, dtype):
     Parameters
     ----------
     F : symbol or ndarray
-    att_score : Symborl or NDArray
+    att_score : Symbol or NDArray
         Shape (batch_size, query_length, memory_length)
     mask : Symbol or NDArray or None
         Shape (batch_size, query_length, memory_length)
     Returns
     -------
-    att_weights : Symborl or NDArray
+    att_weights : Symbol or NDArray
         Shape (batch_size, query_length, memory_length)
     """
     if mask is not None:
