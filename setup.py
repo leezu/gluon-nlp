@@ -33,6 +33,10 @@ requirements = [
     'cython'
 ]
 
+ext_modules = [Extension('gluonnlp.data.wordpiece', sources=['src/gluonnlp/data/wordpiece.pyx'])]
+for e in ext_modules:
+    e.cython_directives = {'language_level': "3"}
+
 setup(
     # Metadata
     name='gluonnlp',
@@ -88,7 +92,5 @@ setup(
             'flaky',
         ],
     },
-    ext_modules=[
-        Extension('gluonnlp.data.wordpiece', sources=['src/gluonnlp/data/wordpiece.pyx']),
-    ],
+    ext_modules=ext_modules,
 )
